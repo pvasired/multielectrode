@@ -1,9 +1,7 @@
-def get_collapsed_ei_thr(datapath, datarun, cell_no, thr_factor):
-    vcd = vl.load_vision_data(datapath, datarun,
-                          include_neurons=True,
-                          include_ei=True,
-                          include_params=True,
-                          include_noise=True)
+import numpy as np
+from scipy.io import loadmat
+
+def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
     # Read the EI for a given cell
     cell_ei = vcd.get_ei_for_cell(cell_no).ei
     
@@ -16,3 +14,7 @@ def get_collapsed_ei_thr(datapath, datarun, cell_no, thr_factor):
     good_inds = np.argwhere(np.abs(collapsed_ei) > thr_factor * channel_noise).flatten()
     
     return good_inds, np.abs(collapsed_ei)
+
+def get_stim_elecs_newlv(analysis_path, pattern):
+    patternStruct = loadmat(analysis_path + "pattern_files/p" + str(pattern) + ".mat", struct_as_record=False, squeeze_me=True)['patternStruct']
+    return patternStruct.stimElecs
