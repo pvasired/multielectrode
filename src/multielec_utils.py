@@ -18,3 +18,7 @@ def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
 def get_stim_elecs_newlv(analysis_path, pattern):
     patternStruct = loadmat(analysis_path + "pattern_files/p" + str(pattern) + ".mat", struct_as_record=False, squeeze_me=True)['patternStruct']
     return patternStruct.stimElecs
+
+def get_stim_amps_newlv(analysis_path, pattern):
+    patternStruct = loadmat(analysis_path + "pattern_files/p" + str(pattern) + ".mat", struct_as_record=False, squeeze_me=True)['patternStruct']
+    return patternStruct.amplitudes
