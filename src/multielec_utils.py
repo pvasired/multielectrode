@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.io import loadmat
+import os
 
 def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
     # Read the EI for a given cell
@@ -16,9 +17,9 @@ def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
     return good_inds, np.abs(collapsed_ei)
 
 def get_stim_elecs_newlv(analysis_path, pattern):
-    patternStruct = loadmat(analysis_path + "pattern_files/p" + str(pattern) + ".mat", struct_as_record=False, squeeze_me=True)['patternStruct']
+    patternStruct = loadmat(os.path.join(analysis_path, "pattern_files/p" + str(pattern) + ".mat"), struct_as_record=False, squeeze_me=True)['patternStruct']
     return patternStruct.stimElecs
 
 def get_stim_amps_newlv(analysis_path, pattern):
-    patternStruct = loadmat(analysis_path + "pattern_files/p" + str(pattern) + ".mat", struct_as_record=False, squeeze_me=True)['patternStruct']
+    patternStruct = loadmat(os.path.join(analysis_path, "pattern_files/p" + str(pattern) + ".mat"), struct_as_record=False, squeeze_me=True)['patternStruct']
     return patternStruct.amplitudes
