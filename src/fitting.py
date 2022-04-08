@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 import statsmodels.api as sm
+import copy
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, interaction=True):
     y = []
@@ -57,3 +58,16 @@ def negLL(params, *args):
 
 def fsigmoid(X, w):
     return 1.0 / (1.0 + np.exp(-X @ w))
+
+def disambiguate_sigmoid(sigmoid_, spont_limit = 0.2, noise_limit = 0.0, thr_prob=0.5):
+    sigmoid = copy.copy(sigmoid_)
+    if np.max(sigmoid) <= spont_limit:
+        return sigmoid
+    above_limit = np.argwhere(sigmoid > spont_limit).flatten()
+    
+    i = np.argmin(np.abs(sigmoid[above_limit]-thr_prob))
+    upper_tail = sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):]
+    upper_tail[upper_tail<=noise_limit] = 1
+    
+    sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
+    return sigmoid
