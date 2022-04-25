@@ -26,7 +26,7 @@ def get_stim_amps_newlv(analysis_path, pattern):
     return patternStruct.amplitudes
 
 def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
-                  p_thr=1/19, p_upper=1, downsample=False, downsample_trials=10, 
+                  p_thr=2/19, p_upper=1, downsample=False, downsample_trials=10, 
                   downsample_factor=2, load_from_mat=False, MATFILE_BASE=''):
     
     if load_from_mat:

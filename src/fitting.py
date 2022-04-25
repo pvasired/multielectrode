@@ -41,7 +41,7 @@ def negLL(params, *args):
     yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
 
     # Calculate negative log likelihood
-    NLL = -np.sum(y * np.log2(yPred) + (1 - y) * np.log2(1 - yPred))/len(y)     # negative log likelihood for logistic
+    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     # negative log likelihood for logistic
 
     if method == 'MAP':
          penalty = 0.5 * (w - mu) @ np.linalg.inv(cov) @ (w - mu)     # penalty term according to MAP regularization
