@@ -102,7 +102,7 @@ def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
         if downsample:
             p_thr = max(p_thr, 1/downsample_trials)
         
-    good_inds = np.where((probs > p_thr) & (probs < p_upper) & (amplitudes[:, 0] < 1.5))[0]
+    good_inds = np.where((probs > p_thr) & (probs < p_upper) & (amplitudes[:, 0] < 2.0) & (np.any(np.absolute(amplitudes) > 0, axis=1)))[0]
 
     y = probs[good_inds]
     X = amplitudes[good_inds]
