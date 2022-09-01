@@ -5,6 +5,7 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import minimize
 from matplotlib.patches import Ellipse
 import matplotlib.transforms as transforms
+from itertools import chain, combinations
 import copy
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, interaction=True):
@@ -64,16 +65,28 @@ def negLL(params, *args):
 def negLL_hotspot(params, *args):
     X, y, verbose, method, reg = args
     
-    w = params.reshape(-1, X.shape[-1])
-    
+    w = params.reshape(-1, X.shape[-1]).astype(float)
+
+    prod = np.ones(len(X))
+    for i in range(len(w)):
+        prod *= (1 + np.exp(X @ w[i].T))
+    prod -= 1
+
+    yPred2 = 1 / (1 + np.exp(-np.log(prod)))
+
     # Get predicted probability of spike using current parameters
-    response_mat = 1 / (1 + np.exp(-X @ w.T))
-    yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
-    yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
-    yPred[yPred == 0] = 0.000001
+    # response_mat = 1 / (1 + np.exp(-X @ w.T))
+    # yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
+
+    # print(np.sum(np.absolute(yPred - yPred2)))
+    # yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
+    # yPred[yPred == 0] = 0.000001
 
     # Calculate negative log likelihood
-    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     # negative log likelihood for logistic
+    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
+    # NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     # negative log likelihood for logistic
+
+    # print(NLL, NLL2)
 
     if method == 'l1':
          penalty = reg*np.linalg.norm(w.flatten(), ord=1)     # penalty term according to l1 regularization
@@ -83,8 +96,42 @@ def negLL_hotspot(params, *args):
          penalty = 0
 
     if verbose:
-        print(NLL, penalty)
-    return(NLL + penalty)
+        print(NLL2, penalty)
+    return(NLL2 + penalty)
+
+def all_combos(iterable):
+    "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
+    s = list(iterable)    
+    return list(chain.from_iterable(combinations(s, r) for r in range(len(s)+1)))
+
+def negLL_hotspot_jac(params, *args):
+    X, y, verbose, method, reg = args
+    w = params.reshape(-1, X.shape[-1]).astype(float)
+    
+    prod = np.ones(len(X))
+    for i in range(len(w)):
+        prod = prod * (1 + np.exp(X @ w[i].T))
+    prod = prod - 1
+
+    factors = np.zeros((len(w), len(X)))
+    for i in range(len(w)):
+        other_weights = np.setdiff1d(np.arange(len(w), dtype=int), i)
+        other_combos = all_combos(other_weights)
+        for j in range(len(other_combos)):
+            other_combo = np.array(other_combos[j])
+            if len(other_combo) > 0:
+                factors[i] = factors[i] + np.exp(X @ np.sum(w[other_combo], axis=0).T)
+
+    factors = factors + 1
+
+    grad = np.zeros_like(w, dtype=float)
+    for i in range(len(w)):
+        term1 = X.T @ (1 / (1 + np.exp(-X @ w[i].T)))
+        term2 = -X.T @ (y * np.exp(X @ w[i].T) * factors[i] / prod)
+
+        grad[i] = term1 + term2
+
+    return grad.reshape(-1)
 
 def fsigmoid(X, w):
     return 1.0 / (1.0 + np.exp(-X @ w))
@@ -132,24 +179,33 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.6, num_points
     else:
         return False
 
-def get_w(m, X, y, zero_prob, nll_null, prev_initialization=None):
-    if prev_initialization is not None:
-        new_x0 = np.random.normal(size= (m - len(prev_initialization)) * X.shape[-1])
-        x0 = np.concatenate((prev_initialization.ravel(), new_x0))
-    else:
-        x0 = np.random.normal(size= m * X.shape[-1])
+def get_w(m, X, y, nll_null, zero_prob=0.01, prev_initialization=None, method='L-BFGS-B', jac=None):
+    
     bounds = []
     z = 1 - (1 - zero_prob)**(1/m)
+
+    if prev_initialization is not None:
+        new_x0 = np.random.normal(size= ((m - len(prev_initialization)), X.shape[-1]))
+        new_x0[:, 0] = np.log(z/(1-z))
+        init = (prev_initialization / prev_initialization[:, 0][:, None]) * np.log(z/(1-z))
+        x0 = np.vstack((init, new_x0)).ravel()
+    else:
+        x0 = np.random.normal(size=(m, X.shape[-1]))
+        x0[:,0] = np.log(z/(1-z))
+        x0 = x0.ravel()
+        
     for j in range(m):
         bounds += [(None, np.log(z/(1-z))), (None, None), (None, None), (None, None)]
         
     opt = minimize(negLL_hotspot, x0=x0, bounds=bounds,
-                       args=(X, y, False, 'none', 0))
+                       args=(X, y, False, 'none', 0), method=method,
+                        jac=jac)
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
 def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8, 
-                        R2_thresh=0.02, zero_prob=0.01):
+                        R2_thresh=0.02, zero_prob=0.01, verbose=False,
+                        method='L-BFGS-B', jac=None):
     X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
 
     ybar = np.mean(y_bin)
@@ -158,18 +214,22 @@ def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8,
     nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, 'none', 0)
 
     m = starting_m
-    last_opt = get_w(m, X_bin, y_bin, zero_prob, nll_null)
+    last_opt = get_w(m, X_bin, y_bin, nll_null, zero_prob=zero_prob, method=method, jac=jac)
     last_R2 = last_opt[2]
     m += 1
 
-    print(last_opt)
+    if verbose:
+        print(last_opt)
     breakFlag = 0
     while m <= max_sites:
-        new_opt = get_w(m, X_bin, y_bin, zero_prob, nll_null,
-                        prev_initialization=last_opt[0])
+        new_opt = get_w(m, X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                        prev_initialization=last_opt[0],
+                        method=method,
+                        jac=jac)
         new_R2 = new_opt[2]
 
-        print(new_opt)
+        if verbose:
+            print(new_opt)
         if new_R2 - last_R2 <= R2_thresh:
             breakFlag = 1
             break

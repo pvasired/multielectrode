@@ -172,7 +172,7 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
         return currs, Ivals, sigmoid, probs, results.x
     
 def triplet_cleaning(electrical_path, gsort_path, dataset, estim, wnoise, p, cell, load_from_mat=False, MATFILE_BASE=None, 
-                     n_neighbors=6, n=2, radius=6, high_thr=0.7, low_thr=0.3, prob_buffer=1e-5, num_trials=20):
+                     n_neighbors=6, n=2, radius=6, high_thr=0.9, low_thr=0.1, prob_buffer=1e-5, num_trials=20):
     
     X_scan = get_stim_amps_newlv(electrical_path, p)
     
