@@ -73,9 +73,7 @@ def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
                 
             probs = dprobs
             trials = dtrials
-            
-            p_thr = max(p_thr, 1/downsample_trials)
-        
+                    
     else:
         filepath = os.path.join(gsort_path, 
                                 dataset, estim, wnoise, "p" + str(p))
@@ -133,7 +131,7 @@ def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
     return X, y, T
 
 def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_limit=0.2, noise_limit=0.1,
-                  curr_min=0.1, curr_max=4, curr_points=1000, return_params=False):
+                  curr_min=0.1, curr_max=4, curr_points=1000, return_params=False, zero_prob=0.01):
 
     currs = np.linspace(curr_min, curr_max, curr_points)
     elec = p
@@ -160,8 +158,11 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     probs[probs < noise_limit] = 0
     probs = fitting.disambiguate_sigmoid(probs, spont_limit=spont_limit, noise_limit=noise_limit)
 
+    bounds = [(None, np.log(zero_prob / (1 - zero_prob))),
+              (0, 20)]
     X_bin, y_bin = fitting.convertToBinaryClassifier(probs, trials, Ivals[:k].reshape(-1, 1))
-    results = minimize(fitting.negLL, x0=np.array([-1, 1]), args=(X_bin, y_bin, False, 'none'))
+    results = minimize(fitting.negLL, x0=np.array([-1, 1]), args=(X_bin, y_bin, False, 'none'),
+                       bounds=bounds)
 
     sigmoid = fitting.fsigmoid(sm.add_constant(currs.reshape(-1, 1)), results.x)
 
@@ -171,16 +172,27 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     else:
         return currs, Ivals, sigmoid, probs, results.x
     
-def triplet_cleaning(electrical_path, gsort_path, dataset, estim, wnoise, p, cell, load_from_mat=False, MATFILE_BASE=None, 
+def triplet_cleaning(X_expt_orig, probs_orig, T_orig, electrical_path, p, dir_thr=0.1,
                      n_neighbors=6, n=2, radius=6, high_thr=0.9, low_thr=0.1, prob_buffer=1e-5, num_trials=20):
     
-    X_scan = get_stim_amps_newlv(electrical_path, p)
-    
-    # Load raw gsort data -- no funny business
+    # X_scan = get_stim_amps_newlv(electrical_path, p)
 
-    X_expt_orig, probs_orig, T_orig = loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, cell,
-                                           load_from_mat=load_from_mat, 
-                                           MATFILE_BASE=MATFILE_BASE)
+    # pool = mp.Pool(processes=48)
+    # results = pool.starmap_async(fitting.enforce_3D_monotonicity, product(np.arange(len(X_expt_orig), dtype=int).tolist(), 
+    #                                                             [X_expt_orig], [probs_orig], [T_orig]))
+    # output = results.get()
+    # pool.close()
+
+    # mono_data = np.array(output, dtype=object)[np.where(np.equal(np.array(output, dtype=object), None) == False)[0]]
+
+    # Xmono = np.zeros((len(mono_data), 3))
+    # ymono = np.zeros(len(mono_data))
+    # Tmono = np.zeros(len(mono_data), dtype=int)
+
+    # for i in range(len(mono_data)):
+    #     Xmono[i] = mono_data[i][0]
+    #     ymono[i] = mono_data[i][1]
+    #     Tmono[i] = mono_data[i][2]
 
     # Line enforcement of monotonicity
     pool = mp.Pool(processes=48)
@@ -216,34 +228,39 @@ def triplet_cleaning(electrical_path, gsort_path, dataset, estim, wnoise, p, cel
     p_clean = np.array(p_clean)
     T_clean = np.array(T_clean)
 
-    # 0/1 pinning based on local mean probability
-
-    dists = cdist(X_clean, X_scan)
-    dists_clean = cdist(X_clean, X_clean)
-    matching_inds = np.array(np.all((X_scan[:,None,:]==X_clean[None,:,:]),axis=-1).nonzero()).T
-
-    X_new = []
-    probs_new = []
-    for i in range(len(dists)):
-        mean_prob = np.mean(p_clean[np.argsort(dists_clean[i])[:n_neighbors]])
-        if mean_prob >= high_thr:
-            neighbors = np.argsort(dists[i])[1:radius+1]
-            new_points = np.setdiff1d(neighbors, matching_inds[:, 0])
-            X_new.append(X_scan[new_points])
-            probs_new.append(np.ones(len(new_points)) - prob_buffer)
-
-        elif mean_prob <= low_thr:
-            neighbors = np.argsort(dists[i])[1:radius+1]
-            new_points = np.setdiff1d(neighbors, matching_inds[:, 0])
-            X_new.append(X_scan[new_points])
-            probs_new.append(np.zeros(len(new_points)) + prob_buffer)
-
-    X_new, idx = np.unique(np.vstack(X_new), axis=0, return_index=True)
-    probs_new = np.hstack(probs_new)[idx]
-    T_new = np.ones(len(probs_new), dtype=int) * num_trials
-
-    X_expt = np.vstack((X_clean, X_new))
-    probs = np.hstack((p_clean, probs_new))
-    T = np.hstack((T_clean, T_new))
+    # X_expt_dirty, probs_dirty, T_dirty = fitting.enforce_3D_monotonicity(X_expt_orig, probs_orig, T_orig)
     
-    return X_expt, probs, T
+
+    # # 0/1 pinning based on local mean probability
+
+    # dists = cdist(X_clean, X_scan)
+    # dists_clean = cdist(X_clean, X_clean)
+    # matching_inds = np.array(np.all((X_scan[:,None,:]==X_clean[None,:,:]),axis=-1).nonzero()).T
+
+    # X_new = []
+    # probs_new = []
+    # for i in range(len(dists)):
+    #     mean_prob = np.mean(p_clean[np.argsort(dists_clean[i])[:n_neighbors]])
+    #     if mean_prob >= high_thr:
+    #         neighbors = np.argsort(dists[i])[1:radius+1]
+    #         new_points = np.setdiff1d(neighbors, matching_inds[:, 0])
+    #         X_new.append(X_scan[new_points])
+    #         probs_new.append(np.ones(len(new_points)) - prob_buffer)
+
+    #     elif mean_prob <= low_thr:
+    #         neighbors = np.argsort(dists[i])[1:radius+1]
+    #         new_points = np.setdiff1d(neighbors, matching_inds[:, 0])
+    #         X_new.append(X_scan[new_points])
+    #         probs_new.append(np.zeros(len(new_points)) + prob_buffer)
+
+    # X_new, idx = np.unique(np.vstack(X_new), axis=0, return_index=True)
+    # probs_new = np.hstack(probs_new)[idx]
+    # T_new = np.ones(len(probs_new), dtype=int) * num_trials
+
+    # X_expt = np.vstack((X_clean, X_new))
+    # probs = np.hstack((p_clean, probs_new))
+    # T = np.hstack((T_clean, T_new))
+    
+    # good_inds = np.where(probs_orig >= 0.2)[0]
+
+    return X_clean, p_clean, T_clean
