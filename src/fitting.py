@@ -9,6 +9,9 @@ from matplotlib.patches import Ellipse
 import matplotlib.transforms as transforms
 from itertools import chain, combinations
 import copy
+import jax
+import jax.numpy as jnp
+import optax
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -328,6 +331,123 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     
     sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
+
+@jax.jit
+def activation_probs(x, w):
+    """
+    Activation probabilities using hotspot model.
+
+    Parameters:
+    w (n x d jnp.DeviceArray): Site weights
+    x (c x d jnp.DeviceArray): Current levels
+
+    Returns:
+    p (c x 1 jnp.DeviceArray): Predicted probabilities
+    """
+    # w : site weights, n x d
+    # x : current levels, c x d
+    site_activations = jnp.dot(w, jnp.transpose(x)) # dimensions: n x c
+    p_sites = jax.nn.sigmoid(site_activations) # dimensions : n x c
+    p = 1 - jnp.prod(1 - p_sites, 0)  # dimensions: c
+
+    return p
+
+# @jax.jit
+# def activation_probs_jac(x, w):
+#     prod = jnp.prod((1 / (1 + jnp.exp(jnp.dot(w, jnp.transpose(x))))), 0)
+#     sigmoid = 1 / (1 + jnp.exp(-jnp.dot(w, jnp.transpose(x))))
+#     # maybe clip something here?
+#     # sigmoid = jnp.clip(sigmoid, a_min=1e-5, a_max=1-1e-5)
+#     # prod = jnp.clip(prod, a_min=1e-5, a_max=1-1e-5)
+    
+#     jac_list = []
+#     for i in range(len(sigmoid)):
+#         jac_list.append(x * (sigmoid[i] * prod)[:, None])
+
+#     return jnp.hstack(jac_list)
+
+@jax.jit
+def fisher_loss_array(probs_vec, transform_mat, jac_full, trials):
+    """
+    Compute the Fisher loss across the entire array.
+
+    Parameters:
+    probs_vec (jnp.DeviceArray): The flattened array of probabilities across all meaningful
+                            (cell, pattern) combinations
+    transform_mat (jnp.DeviceArray): The transformation matrix to convert the trials array
+                                to the transformed trials array for multiple cells on
+                                the same pattern
+    jac_full (jnp.DeviceArray): The full precomputed Jacobian matrix
+    trials (jnp.DeviceArray): The input trials vector to be optimized
+
+    Returns:
+    loss (float): The whole array Fisher information loss
+    """
+    p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
+                                                            # overflow errors
+    t = jnp.dot(transform_mat, trials).flatten()
+    I_p = t / (p_model * (1 - p_model))
+
+    # Avoiding creating the large diagonal matrix and storing in memory
+    I_w = jnp.dot((jac_full.T * I_p), jac_full) / len(p_model)
+
+    # Avoiding multiplying the matrices out and calculating the trace explicitly
+    return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
+
+
+def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0, 
+                          step_size=1, n_steps=100, T_budget=5000, verbose=True):
+    """
+    Fisher optimization loop using optax and AdamW optimizer.
+
+    Parameters:
+    jac_full (jnp.DeviceArray): Full precomputed Jacobian matrix
+    probs_vec (jnp.DeviceArray): Flattened array of all probabilities
+                                 for all non-degenerate (cell, pattern)
+                                 combinations
+    transform_mat (jnp.DeviceArray): transformation matrix to convert trials
+                                     array into correct shape matrix for 
+                                     multiple cells on the same pattern
+    T_prev (jnp.DeviceArray): The previously sampled trials array
+    T (jnp.DeviceArray): The initialization for the to-be-optimized trials
+
+    Returns:
+    losses (np.ndarray): An array of losses per iteration of the optimization routine
+    T (jnp.DeviceArray): The optimized trials matrix 
+    """
+
+    # Initialize the optimizer
+    optimizer = optax.adamw(step_size)
+    opt_state = optimizer.init(T)
+
+    # Update function for computing the gradient
+    @jax.jit
+    def update(jac_full, probs_vec, transform_mat, T_prev, T):
+        # Adding special l1-regularization term that controls the total trial budget
+        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev: fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T)) + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget)
+        grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev)
+        
+        return grads
+    
+    losses = []
+    for step in range(n_steps):
+        if verbose:
+            print(step)
+
+        # Update the optimizer
+        grads = update(jac_full, probs_vec, transform_mat, T_prev, T)
+        updates, opt_state = optimizer.update(grads, opt_state, params=T)
+        T = optax.apply_updates(T, updates)
+        
+        # If desired, compute the losses and store them
+        if verbose:
+            loss = fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+            loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget),
+                            reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget))
+            print(loss_tuple)
+            losses += [loss_tuple]
+
+    return np.array(losses), T
 
 # Deprecated
 def sigmoidND_nonlinear(X, w):
