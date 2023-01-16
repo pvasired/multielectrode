@@ -1,3 +1,5 @@
+# Utilities for fitting electrical stimulation spike sorting data
+
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
 import statsmodels.api as sm
@@ -8,20 +10,58 @@ import matplotlib.transforms as transforms
 from itertools import chain, combinations
 import copy
 
-def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, interaction=True):
+def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
+                              interaction=True):
+    """
+    Converts input g-sort data of probabilities, trials, and 
+    amplitudes. Includes a functionality for converting to data to a
+    polynomial transformation which is now largely deprecated.
+
+    Parameters:
+    probs (N x 1 np.ndarray): The input probabilities
+    num_trials (N x 1 np.ndarray): The input number of trials used for
+                                   each probability
+    amplitudes (N x k np.ndarray): The amplitude (vectors) of current
+                                   stimulus. Supports multi-electrode
+                                   stimulation.
+    
+    Optional Arguments:
+    degree (int): The polynomial transformation degree, default 1
+    interaction (bool): Whether or not to include cross terms in the
+                        construction of the polynomial transform.
+    
+    Return:
+    X (np.ndarray): The binary classifier inputs with constant term
+                    and possibly polynomial tranformation terms added.
+                    The shape of this array is related to the number
+                    of trials per amplitude, the number of amplitudes,
+                    the stimulation current vector sizes, and the 
+                    polynomical transformation degree.
+
+    y (np.ndarray): The binary classifier outputs consisting of 0s and
+                    1s, with the same length as X.
+    """
+    
     y = []
     X = []
+    num_trials = num_trials.astype(int) # convert to integer
     for j in range(len(amplitudes)):
+        # Calculate the number of 1s and 0s for each probability
         num1s = int(np.around(probs[j] * num_trials[j], 0))
         num0s = num_trials[j] - num1s
 
+        # Append all the amplitudes for this probability
         X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
+
+        # Append the 0s and 1s for this probability
         y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
     
+    # If desired, perform a polynomial transformation with cross terms
     if interaction == True:
         poly = PolynomialFeatures(degree)
         X = poly.fit_transform(np.concatenate(X))
 
+    # If no cross terms are desired
     else:
         X = noInteractionPoly(np.concatenate(X), degree)
     
@@ -30,50 +70,110 @@ def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, interacti
     return X, y
 
 def noInteractionPoly(amplitudes, degree):
+    """
+    Constructs a non-interacting polynomial transformation with no
+    cross terms included.
+
+    Parameters:
+    amplitudes (np.ndarray): Raw amplitude vectors
+    degree (int): Degree of polynomial transformation
+
+
+    Returns:
+    X (np.ndarray): Same length as amplitudes, but expanded along 
+                    axis 1 according to the degree of the transform
+    """
+    # For each degree, add the next non-interacting polynomial
     higher_order = []
     for i in range(degree):
         higher_order.append(amplitudes**(i+1))
     
-    return sm.add_constant(np.hstack(higher_order))
+    # Add a constant column to the output
+    return sm.add_constant(np.hstack(higher_order), has_constant='add')
 
 def negLL(params, *args):
+    """
+    Compute the negative log likelihood for a logistic regression
+    binary classification task.
+
+    Parameters:
+    params (np.ndarray): Weight vector to be fit, same dimension as
+                         axis=1 dimension of X (see below)
+    *args (tuple): X (np.ndarray) output of convertToBinaryClassifier,
+                   y (np.ndarray) output of convertToBinaryClassifier,
+                   verbose (bool) increases verbosity
+                   method: regularization method. 'MAP' (maximum a 
+                           posteriori), 'l1', and 'l2' are supported.
+    
+    Returns:
+    negLL (float): negative log likelihood of the data given the 
+                   current parameters, possibly plus a regularization
+                   term.
+    """
     X, y, verbose, method = args
     
     w = params
     
     # Get predicted probability of spike using current parameters
     yPred = 1 / (1 + np.exp(-X @ w))
-    yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
+    yPred[yPred == 1] = 0.999999     # some errors when yPred is 
+                                     # exactly 1 due to taking 
+                                     # log(1 - 1)
     yPred[yPred == 0] = 0.000001
 
     # Calculate negative log likelihood
-    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     # negative log likelihood for logistic
+    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     
 
     if method == 'MAP':
-         penalty = 0.5 * (w - mu) @ np.linalg.inv(cov) @ (w - mu)     # penalty term according to MAP regularization
+        # penalty term according to MAP regularization
+        penalty = 0.5 * (w - mu) @ np.linalg.inv(cov) @ (w - mu)
     elif method == 'l1':
-         penalty = l1_reg*np.linalg.norm(w, ord=1)     # penalty term according to l1 regularization
+        # penalty term according to l1 regularization
+        penalty = l1_reg*np.linalg.norm(w, ord=1)
     elif method == 'l2':
-         penalty = l2_reg*np.linalg.norm(w)    # penalty term according to l2 regularization
+        # penalty term according to l2 regularization
+        penalty = l2_reg*np.linalg.norm(w)
     else:
          penalty = 0
 
     if verbose:
         print(NLL, penalty)
+
     return(NLL + penalty)
 
 def negLL_hotspot(params, *args):
+    """
+    Compute the negative log likelihood for a logistic regression
+    binary classification task assuming the hotpot model of activation.
+
+    Parameters:
+    params (np.ndarray): Weight vector to be fit, same dimension as
+                         axis=1 dimension of X (see below)
+    *args (tuple): X (np.ndarray) output of convertToBinaryClassifier,
+                   y (np.ndarray) output of convertToBinaryClassifier,
+                   verbose (bool) increases verbosity
+                   method (str): regularization method. 'l1', and 'l2' 
+                           are supported.
+                   reg (float): regularization parameter
+
+    Returns:
+    negLL (float): negative log likelihood of the data given the 
+                   current parameters, possibly plus a regularization
+                   term.
+    """
     X, y, verbose, method, reg = args
     
     w = params.reshape(-1, X.shape[-1]).astype(float)
 
+    # Negative log-likelihood calculation for hotspot activation
     prod = np.ones(len(X))
     for i in range(len(w)):
         prod *= (1 + np.exp(X @ w[i].T))
     prod -= 1
 
-    prod[prod == 0] = 1e-5
+    prod[prod < 1e-10] = 1e-10  # prevent divide by 0 errors
 
+    ### Deprecated calculation (gives same results but slower) ###
     # yPred2 = 1 / (1 + np.exp(-np.log(prod)))
 
     # Get predicted probability of spike using current parameters
@@ -83,39 +183,76 @@ def negLL_hotspot(params, *args):
     # print(np.sum(np.absolute(yPred - yPred2)))
     # yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
     # yPred[yPred == 0] = 0.000001
+    
+    # negative log likelihood for logistic
+    # NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
+    ###
 
     # Calculate negative log likelihood
     NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
-    # NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     # negative log likelihood for logistic
 
-    # print(NLL, NLL2)
-
+    # Add the regularization penalty term if desired
     if method == 'l1':
-         penalty = reg*np.linalg.norm(w.flatten(), ord=1)     # penalty term according to l1 regularization
+        # penalty term according to l1 regularization
+        penalty = reg*np.linalg.norm(w.flatten(), ord=1)
     elif method == 'l2':
-         penalty = reg/2*np.linalg.norm(w.flatten())**2    # penalty term according to l2 regularization
+        # penalty term according to l2 regularization
+        penalty = reg/2*np.linalg.norm(w.flatten())**2
     else:
-         penalty = 0
+        penalty = 0
 
     if verbose:
         print(NLL2, penalty)
+        
     return(NLL2 + penalty)
 
 def all_combos(iterable):
+    """
+    Compute the 'powerset' of an iterable defined as:
     "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
+    
+    Parameters:
+    iterable: An iterable list or np.ndarray
+
+    Returns:
+    powerset: The powerset, or another iterable consisting of all 
+              combinations of elements from the input iterable.
+    """
     s = list(iterable)    
-    return list(chain.from_iterable(combinations(s, r) for r in range(len(s)+1)))
+    return list(chain.from_iterable(
+                        combinations(s, r) for r in range(len(s)+1)))
 
 def negLL_hotspot_jac(params, *args):
+    """
+    Manually computed jacobian of negative log likelihood function
+    assuming a hotspot model of activation. Manual gradients greatly
+    improve runtime.
+
+    Parameters:
+    params (np.ndarray): Weight vector to be fit, same dimension as
+                         axis=1 dimension of X (see below)
+    *args (tuple): X (np.ndarray) output of convertToBinaryClassifier,
+                   y (np.ndarray) output of convertToBinaryClassifier,
+                   verbose (bool) increases verbosity
+                   method (str): regularization method. 'l2' 
+                                 is supported.
+                   reg (float): regularization parameter
+
+    Returns:
+    grad (np.ndarray): jacobian of negative log likelihood, same shape
+                       as params
+    """
     X, y, verbose, method, reg = args
     w = params.reshape(-1, X.shape[-1]).astype(float)
     
+    # Complicated manual jacobian calculation, was verified
+    # to produce the same results as automated differentiation methods
     prod = np.ones(len(X))
     for i in range(len(w)):
         prod = prod * (1 + np.exp(X @ w[i].T))
     prod = prod - 1
 
-    prod[prod == 0] = 1e-5
+    prod[prod < 1e-10] = 1e-10  # prevent divide by 0 errors
 
     factors = np.zeros((len(w), len(X)))
     for i in range(len(w)):
@@ -124,7 +261,8 @@ def negLL_hotspot_jac(params, *args):
         for j in range(len(other_combos)):
             other_combo = np.array(other_combos[j])
             if len(other_combo) > 0:
-                factors[i] = factors[i] + np.exp(X @ np.sum(w[other_combo], axis=0).T)
+                factors[i] = factors[i] + np.exp(X @ np.sum(
+                                            w[other_combo], axis=0).T)
 
     factors = factors + 1
 
@@ -137,81 +275,52 @@ def negLL_hotspot_jac(params, *args):
 
     grad = grad.ravel()
 
+    # penalty term according to l2 regularization
     if method == 'l2':
-         grad += reg * params    # penalty term according to l2 regularization
+        grad += reg * params
 
     return grad
 
-def negLL_MMC(w, X):
-    X = sm.add_constant(X, has_constant='add')
-
-    prod = np.ones(len(X))
-    for i in range(len(w)):
-        prod *= (1 + np.exp(X @ w[i].T))
-    prod -= 1
-
-    yPred = prod / (prod + 1)
-
-    factors = np.zeros((len(w), len(X)))
-    for i in range(len(w)):
-        other_weights = np.setdiff1d(np.arange(len(w), dtype=int), i)
-        other_combos = all_combos(other_weights)
-        for j in range(len(other_combos)):
-            other_combo = np.array(other_combos[j])
-            if len(other_combo) > 0:
-                factors[i] = factors[i] + np.exp(X @ np.sum(w[other_combo], axis=0).T)
-
-    factors = factors + 1
-
-    MMC = np.zeros(len(X))
-    for j in range(len(X)):
-
-        grad0 = np.zeros_like(w, dtype=float)
-        for i in range(len(w)):
-            term1 = X[j] / (1 + np.exp(-X[j] @ w[i]))
-
-            grad0[i] = term1
-
-        grad1 = np.zeros_like(w, dtype=float)
-        for i in range(len(w)):
-            term1 = X[j] / (1 + np.exp(-X[j] @ w[i]))
-            term2 = -X[j] * np.exp(X[j] @ w[i]) * factors[i][j] / prod[j]
-
-            grad1[i] = term1 + term2
-
-        MMC[j] = (1 - yPred[j]) * np.linalg.norm(grad0, 'fro') + yPred[j] * np.linalg.norm(grad1, 'fro')
-
-    return MMC
-
+# Deprecated
 def fsigmoid(X, w):
+    """
+    N-dimensional sigmoid function.
+    
+    Parameters:
+    X (M x N np.ndarray): Input values
+    w (N x 1 np.ndarray): Weight vector across input values
+    
+    Returns:
+    sigmoid: 1 / (1 + exp(-X.w))
+    """
     return 1.0 / (1.0 + np.exp(-X @ w))
 
-def clean_probs_triplet(probs,flip_thr=0.25,
-                        zero_thr=0.15):
+def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_prob=0.5):
+    """
+    Utility for disambiguating 0/1 probability for g-sort output.
+    The function converts 0s to 1s if the maximum probability 
+    exceeds some spontaneous limit. For all amplitudes with
+    magnitude greater than the amplitude that reached the 
+    spontaneous limit, all probabilities below some noise 
+    threshold are converted from 0s to 1s.
+    
+    Parameters:
+    sigmoid_ (np.ndarray): Array of probabilities sorted according to
+                           increasing magnitudes of amplitudes
+    spont_limit (float): Maximum spontaneous activity threshold
+    noise_limit (float): Threshold below which 0s are converted to 1s
+    thr_prob (float): Value for determining where to start flipping
+                      probabilities from 0 to 1
 
-    if np.amax(probs) >= flip_thr:
-        zero_inds = np.where(probs <= zero_thr)[0]
-        '''
-        Find the amplitude with probability closest to 0.5. Flip all 0s above 
-        this amplitude to 1s, force all 0s below this amp to exactly 0
-        '''
-        thr_idx = np.argmin(np.absolute(probs - 0.5))
-        zero_inds_1 = zero_inds[zero_inds > thr_idx]
-        zero_inds_0 = zero_inds[zero_inds < thr_idx]
-
-        probs_cleaned = probs.copy()
-        probs_cleaned[zero_inds_1] = 1
-        probs_cleaned[zero_inds_0] = 0
-
-        return probs_cleaned
-
-    return probs
-
-def disambiguate_sigmoid(sigmoid_, spont_limit = 0.2, noise_limit = 0.0, thr_prob=0.5):
+    Returns:
+    sigmoid (np.ndarray): 0/1 disambiguated sigmoid with same shape
+                          as sigmoid_
+    
+    """
     sigmoid = copy.copy(sigmoid_)
-    if np.max(sigmoid) <= spont_limit:
+    if np.max(sigmoid) < spont_limit:
         return sigmoid
-    above_limit = np.argwhere(sigmoid > spont_limit).flatten()
+    above_limit = np.argwhere(sigmoid >= spont_limit).flatten()
     
     i = np.argmin(np.abs(sigmoid[above_limit]-thr_prob))
     upper_tail = sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):]
@@ -220,48 +329,78 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.2, noise_limit = 0.0, thr_pro
     sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
+# Deprecated
 def sigmoidND_nonlinear(X, w):
+    """
+    N-dimensional nonlinear sigmoid computed according to multi-
+    hotspot model.
+    
+    Parameters:
+    X (np.ndarray): Input amplitudes
+    w (np.ndarray): Weight vector matrix
+
+    Returns:
+    response (np.ndarray): Probabilities with same length as X
+    """
     response_mat = 1 / (1 + np.exp(-X @ w.T))
     response = 1 - np.multiply.reduce(1 - response_mat, axis=1)
     return response
 
-def sigmoidND_nonlinear_max(X, w):
-    combos = all_combos(np.arange(len(w), dtype=int))
+def generate_input_list(all_probs, amps, trials, w_inits_array):
+    """
+    Generate input list for multiprocessing fitting of sigmoids
+    to an entire array.
+    
+    Parameters:
+    all_probs (cells x patterns x amplitudes np.ndarray): Probabilities
+    amps (patterns x amplitudes x stimElecs np.ndarray): Amplitudes
+    trials (patterns x amplitudes np.ndarray): Trials
+    w_inits_array (cells x patterns np.ndarray of objects): Initial guesses
+                                                            of parameters
+                                                            
+    Returns:
+    input_list (list): formatter list ready for multiprocessing
+    """
+    input_list = []
+    for i in range(len(all_probs)):
+        for j in range(len(all_probs[i])):
+            probs = all_probs[i][j]
+            T = trials[j]
+            X = amps[j]
 
-    max_val = np.ones(len(X)) * -np.inf
-    for i in range(len(combos)):
-        if len(np.array(combos[i])) > 0:
-            subset = np.array(combos[i])
-            subset_val = X @ np.sum(w[subset, :], axis=0)
+            input_list += [(X, probs, T, w_inits_array[i][j])]
 
-            larger_inds = np.where(subset_val > max_val)[0]
-            max_val[larger_inds] = subset_val[larger_inds]
+    return input_list
 
-    return 1 / (1 + np.exp(-max_val))
+def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
+    I1 = np.linspace(curr_min, curr_max, num_currs)
+    I2 = np.linspace(curr_min, curr_max, num_currs)
+    I3 = np.linspace(curr_min, curr_max, num_currs)
 
-def Fisher_max(X, w, l2_reg=0):
-    sigma = sigmoidND_nonlinear_max(X, w)
+    X_triplet = sm.add_constant(np.array(np.meshgrid(I1, I2, I3)).T.reshape(-1,3), has_constant='add')
+    X_1elec = []
+    for i in range(3):
+        X_elec = np.zeros((len(I1), 3))
+        X_elec[:, i] = I1
+        X_1elec.append(X_elec)
 
-    F = np.zeros((w.shape[-1], w.shape[-1]))
-    for i in range(len(sigma)):
-        F += sigma[i] * (1 - sigma[i]) * np.outer(X[i], X[i])
+    X_1elec = sm.add_constant(np.vstack(X_1elec), has_constant='add')
 
-    F = F / len(X)
-    F += l2_reg * np.eye(w.shape[-1])
+    selec_product_triplet = np.ones(len(X_triplet))
+    for i in range(len(ws)):
+        if i in targets:
+            selec_product_triplet = selec_product_triplet * sigmoidND_nonlinear(X_triplet, ws[i])
+        else:
+            selec_product_triplet = selec_product_triplet * (1 - sigmoidND_nonlinear(X_triplet, ws[i]))
 
-    return F
+    selec_product_1elec = np.ones(len(X_1elec))
+    for i in range(len(ws)):
+        if i in targets:
+            selec_product_1elec = selec_product_1elec * sigmoidND_nonlinear(X_1elec, ws[i])
+        else:
+            selec_product_1elec = selec_product_1elec * (1 - sigmoidND_nonlinear(X_1elec, ws[i]))
 
-def var_max(X_l, X_u, w, l2_reg=0):
-    F = Fisher_max(X_l, w, l2_reg=l2_reg)
-
-    sigma_u = sigmoidND_nonlinear_max(X_u, w)
-    var = np.zeros(len(X_u))
-
-    for i in range(len(var)):
-        c_i = sigma_u[i] * (1 - sigma_u[i]) * X_u[i]
-        var[i] = c_i @ (np.linalg.inv(F) @ c_i) 
-
-    return var
+    return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points=100):
     point = Xdata[index]
@@ -354,24 +493,31 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points
 
 #     return np.array(Xmono), np.array(ymono), np.array(Tmono)
 
-def get_w(m, X, y, nll_null, zero_prob=0.01, initialization=None, prev_initialization=None, method='L-BFGS-B', jac=None,
+# Deprecated
+def get_w_old(m, X, y, nll_null, zero_prob=0.01, initialization=None, prev_initialization=None, method='L-BFGS-B', jac=None,
           reg_method='none', reg=0):
     
-    bounds = []
-    z = 1 - (1 - zero_prob)**(1/m)
+    if type(initialization) == str:
+        if initialization == 'multiprocessing':
+            x0 = copy.copy(m)
+            m = len(x0)
+            z = 1 - (1 - zero_prob)**(1/m)
 
-    if prev_initialization is not None:
-        new_x0 = np.random.normal(size= ((m - len(prev_initialization)), X.shape[-1]))
-        new_x0[:, 0] = np.log(z/(1-z))
-        init = (prev_initialization / prev_initialization[:, 0][:, None]) * np.log(z/(1-z))
-        x0 = np.vstack((init, new_x0)).ravel()
-    elif initialization is not None:
-        x0 = initialization.ravel()
     else:
-        x0 = np.random.normal(size=(m, X.shape[-1]))
-        x0[:,0] = np.log(z/(1-z))
-        x0 = x0.ravel()
-        
+        z = 1 - (1 - zero_prob)**(1/m)
+        if prev_initialization is not None:
+            new_x0 = np.random.normal(size= ((m - len(prev_initialization)), X.shape[-1]))
+            new_x0[:, 0] = np.log(z/(1-z))
+            init = (prev_initialization / prev_initialization[:, 0][:, None]) * np.log(z/(1-z))
+            x0 = np.vstack((init, new_x0)).ravel()
+        elif initialization is not None:
+            x0 = initialization.ravel()
+        else:
+            x0 = np.random.normal(size=(m, X.shape[-1]))
+            x0[:,0] = np.log(z/(1-z))
+            x0 = x0.ravel()
+
+    bounds = []
     for j in range(m):
         bounds += [(None, np.log(z/(1-z))), (None, None), (None, None), (None, None)]
 
@@ -381,7 +527,8 @@ def get_w(m, X, y, nll_null, zero_prob=0.01, initialization=None, prev_initializ
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
-def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8, 
+# Deprecated
+def fit_triplet_surface_old(X_expt, probs, T, starting_m=2, max_sites=8, 
                         R2_thresh=0.02, zero_prob=0.01, verbose=False,
                         method='L-BFGS-B', jac=None, initialization=None, reg_method='none', reg=0):
     X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
@@ -389,7 +536,7 @@ def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8,
     ybar = np.mean(y_bin)
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), np.zeros(X_expt.shape[-1])))
-    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, 'none', 0)
+    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, reg_method, reg)
 
     m = starting_m
     last_opt = get_w(m, X_bin, y_bin, nll_null, initialization=initialization, zero_prob=zero_prob, method=method, jac=jac,
@@ -398,8 +545,7 @@ def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8,
     m += 1
 
     if verbose:
-        print(last_opt)
-    # breakFlag = 0
+        print(last_opt, last_R2)
     while m <= max_sites:
         new_opt = get_w(m, X_bin, y_bin, nll_null, zero_prob=zero_prob,
                         prev_initialization=last_opt[0],
@@ -410,19 +556,155 @@ def fit_triplet_surface(X_expt, probs, T, starting_m=2, max_sites=8,
         new_R2 = new_opt[2]
 
         if verbose:
-            print(new_opt)
+            print(new_opt, new_R2)
         if new_R2 - last_R2 <= R2_thresh:
-            # breakFlag = 1
             break
 
         last_opt = new_opt
         last_R2 = new_R2
         m += 1
 
-    # if not breakFlag:
-    #     raise RuntimeError('Failed to converge after max number of sites.')
-
     return last_opt[0]
+
+def fit_surface(X_expt, probs, T, w_inits, 
+                        R2_thresh=0.02, zero_prob=0.01, verbose=False,
+                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='l2', reg=0,
+                        min_prob=0.3):
+    """
+    Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
+    This function is primarily a wrapper for calling get_w() in the framework of 
+    early stopping using the McFadden pseudo-R2 metric.
+
+    Parameters:
+    X_expt (N x d np.ndarray): Input amplitudes
+    probs (N x 1 np.ndarray): Probabilities corresponding to the amplitudes
+    T (N x 1 np.ndarray): Trials at each amplitude
+    w_inits (list): List of initial guessses for each number of hotspots. Each element
+                    in the list is a (m x (d + 1)) np.ndarray with m the number of 
+                    hotspots. This list should be generated externally.
+    R2_thresh (float): Threshold used for determining when to stop adding hotspots
+    zero_prob (float): Value for what the probability should be forced to be below
+                       at an amplitude of 0-vector
+    verbose (bool): Increases verbosity
+    method (string): Method for optimization according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Jacobian function if manually calculated
+    reg_method (string): Regularization method. 'l2' is supported
+    reg (float): Regularization parameter value
+    min_prob (float): Minimum probability that must be exceeded in the dataset for
+                      fitting to occur and to not return the null parameters
+
+    Returns:
+    last_opt[0] (m x (d + 1) np.ndarray): The optimized set of parameters for the 
+                                          optimized number of hotspots m using
+                                          McFadden Pseudo-R2 and early stopping
+    probs_pred (N x 1 np.ndarray): The predicted probabilities at all amplitudes
+                                   according to the optimized parameters
+    w_inits (list): The new initial guesses for each number of hotspots for the
+                    next possible iteration of fitting
+    """
+    X_orig = copy.copy(X_expt)
+
+    # If the probability never gets large enough, return the degenerate parameters
+    # The degenerate parameters are a bias term of -np.inf and all slopes set to 0
+    # These parameters cause probs_pred to be an array of all 0s
+    if ~np.any(probs >= min_prob):
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+        probs_pred = sigmoidND_nonlinear(sm.add_constant(X_orig, has_constant='add'), 
+                                         deg_opt)
+
+        return deg_opt, probs_pred, w_inits
+    
+    # If a large enough probability was detected, begin fitting
+
+    # Convert the data to binary classification data
+    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
+
+    # Compute the negative log likelihood of the null model which only
+    # includes an intercept
+    ybar = np.mean(y_bin)
+    beta_null = np.log(ybar / (1 - ybar))
+    null_weights = np.concatenate((np.array([beta_null]), 
+                                   np.zeros(X_expt.shape[-1])))
+    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, reg_method, 
+                             reg)
+    if verbose:
+        print(nll_null)
+
+    # Now begin the McFadden pseudo-R2 early stopping loop
+    last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
+                     method=method, jac=jac, reg_method=reg_method, reg=reg)
+    w_inits[0] = last_opt[0]
+    last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
+                            # procedure
+
+    if verbose:
+        print(last_opt, last_R2)
+
+    for i in range(1, len(w_inits)):
+        # Refit with next number of sites
+        new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                        method=method,
+                        jac=jac,
+                        reg_method=reg_method,
+                        reg=reg)
+        w_inits[i] = new_opt[0]
+        new_R2 = new_opt[2]
+
+        if verbose:
+            print(new_opt, new_R2)
+
+        # If the pseudo-R2 improvement was too small, break and stop adding sites
+        if new_R2 - last_R2 <= R2_thresh:
+            break
+
+        last_opt = new_opt
+        last_R2 = new_R2
+
+    probs_pred = sigmoidND_nonlinear(sm.add_constant(X_orig, has_constant='add'), last_opt[0])
+
+    return last_opt[0], probs_pred, w_inits
+
+def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
+          reg_method='none', reg=0, slope_bound=10):
+    """
+    Fitting function for fitting data with a specified number of hotspots
+    
+    Parameters:
+    w_init (m x (d + 1) np.ndarray): Initial guesses on parameters for model
+                                     with m hotspots
+    X (N x (d + 1) np.ndarray): Binary classification input data with constant term
+    y (N x 1 np.ndarray): Binary classification output data (0s or 1s)
+    nll_null (float): The negative log likelihood for the null model to the data 
+    zero_prob (float): The forced maximum probability at 0-vector
+    method (string): Optimization method according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Manual jacobian function
+    reg_method (string): Regularization method, only 'none' is currently supported
+    reg (float): Regularization parameter
+
+    Returns:
+    weights (m x (d + 1) np.ndarrray): Fitted weight vector
+    opt.fun (float): Minimized value of negative log likelihood
+    R2 (float): McFadden pseudo-R2 value
+    """
+
+    z = 1 - (1 - zero_prob)**(1/len(w_init))
+
+    # Set up bounds for constrained optimization
+    bounds = []
+    for j in range(len(w_init)):
+        bounds += [(None, np.log(z/(1-z)))]
+        for i in range(X.shape[-1] - 1):
+            bounds += [(-slope_bound, slope_bound)]
+
+    # Optimize the weight vector with MLE
+    opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
+                       args=(X, y, False, reg_method, reg), method=method,
+                        jac=jac)
+    
+    return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
 def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
     """

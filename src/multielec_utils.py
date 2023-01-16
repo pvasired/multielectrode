@@ -21,6 +21,20 @@ Ivals = np.array([0.10053543, 0.11310236, 0.11938583, 0.13195276, 0.14451969,
                        2.81102362, 3.11220472, 3.41338583, 3.71456693, 4.1161])
 
 def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
+    """
+    Get the time-collapsed EI of a cell
+    
+    Parameters:
+    vcd (object): visionloader object for the dataset
+    cell_no (int): Cell number for the target cell EI
+    thr_factor (float): value for which to threshold EI for the cell
+    
+    Returns:
+    good_inds (np.ndarray): Indices of electrodes where EI meets threshold
+    collapsed_EI: Time-collapsed EI according to minimum value across time,
+                  absolute valued
+    
+    """
     # Read the EI for a given cell
     cell_ei = vcd.get_ei_for_cell(cell_no).ei
     
@@ -35,13 +49,36 @@ def get_collapsed_ei_thr(vcd, cell_no, thr_factor):
     return good_inds, np.abs(collapsed_ei)
 
 def get_stim_elecs_newlv(analysis_path, pattern):
+    """
+    Read a newlv pattern files directory and get the stimulation 
+    electrodes.
+    
+    Parameters:
+    analysis_path: Path to preprocessed data
+    pattern: Pattern for which to get stimulation electrodes
+
+    Returns:
+    stimElecs (np.ndarray): Stimulation electrodes for the pattern
+    """
     patternStruct = loadmat(os.path.join(analysis_path, "pattern_files/p" + str(pattern) + ".mat"), struct_as_record=False, squeeze_me=True)['patternStruct']
     return patternStruct.stimElecs
 
 def get_stim_amps_newlv(analysis_path, pattern):
+    """
+    Read a newlv pattern files directory and get the stimulation 
+    amplitudes.
+    
+    Parameters:
+    analysis_path: Path to preprocessed data
+    pattern: Pattern for which to get stimulation smplitudes
+
+    Returns:
+    amplitudes (np.ndarray): Stimulation amplitudes for the pattern
+    """
     patternStruct = loadmat(os.path.join(analysis_path, "pattern_files/p" + str(pattern) + ".mat"), struct_as_record=False, squeeze_me=True)['patternStruct']
     return patternStruct.amplitudes
 
+# Deprecated
 def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
                   p_thr=-1, p_upper=1, downsample=False, downsample_trials=10, 
                   downsample_factor=2, load_from_mat=False, MATFILE_BASE=''):
@@ -130,8 +167,9 @@ def loadNewLVData(electrical_path, gsort_path, dataset, estim, wnoise, p, n,
 
     return X, y, T
 
+# Deprecated
 def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_limit=0.2, noise_limit=0.1,
-                  curr_min=0.1, curr_max=4, curr_points=1000, return_params=False, zero_prob=0.01):
+                  curr_min=0.1, curr_max=4, curr_points=1000, return_params=False, zero_prob=0.01, gtype='single'):
 
     currs = np.linspace(curr_min, curr_max, curr_points)
     elec = p
@@ -140,12 +178,21 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     k = 0
     probs = []
     trials = []
+    spikes = []
     while True:
         try:
-            with open(os.path.join(filepath_1elec, "gsort_single_v2_n" + str(n) + "_p" + str(elec) + "_k" + str(k) + ".pkl"), "rb") as f:
+            with open(os.path.join(filepath_1elec, "gsort_" + gtype + "_v2_n" + str(n) + "_p" + str(elec) + "_k" + str(k) + ".pkl"), "rb") as f:
                 prob_dict = pickle.load(f)
                 probs.append(prob_dict["cosine_prob"][0])
                 trials.append(prob_dict["num_trials"])
+
+                if n in list(prob_dict['cell_in_clusters'].keys()):
+                    cell_clusters = np.array(prob_dict['cell_in_clusters'][n])
+                    cluster_traces = np.array(prob_dict['initial_clustering_with_virtual'])
+                    spikes.append(np.in1d(cluster_traces, cell_clusters).astype(int))
+
+                else:
+                    spikes.append(np.zeros(int(prob_dict["num_trials"]), dtype=int))
 
         except:
             break
@@ -154,6 +201,7 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
 
     trials = np.array(trials, dtype=int)
     probs = np.array(probs)
+    spikes = np.array(spikes, dtype=object)
     probs[:12] = 0
     probs[probs < noise_limit] = 0
     probs = fitting.disambiguate_sigmoid(probs, spont_limit=spont_limit, noise_limit=noise_limit)
@@ -161,19 +209,19 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     bounds = [(None, np.log(zero_prob / (1 - zero_prob))),
               (0, 20)]
     X_bin, y_bin = fitting.convertToBinaryClassifier(probs, trials, Ivals[:k].reshape(-1, 1))
-    results = minimize(fitting.negLL, x0=np.array([-1, 1]), args=(X_bin, y_bin, False, 'none'),
+    results = minimize(fitting.negLL, x0=np.array([np.log(zero_prob / (1 - zero_prob)), 1]), args=(X_bin, y_bin, False, 'none'),
                        bounds=bounds)
 
     sigmoid = fitting.fsigmoid(sm.add_constant(currs.reshape(-1, 1)), results.x)
 
     if not return_params:
-        return currs, Ivals, sigmoid, probs
+        return currs, Ivals, sigmoid, probs, spikes
     
     else:
-        return currs, Ivals, sigmoid, probs, results.x
+        return currs, Ivals, sigmoid, probs, spikes, results.x
     
 def triplet_cleaning(X_expt_orig, probs_orig, T_orig, electrical_path, p, dir_thr=0.1,
-                     n_neighbors=6, n=2, radius=6, high_thr=0.9, low_thr=0.1, prob_buffer=1e-5, num_trials=20):
+                     n_neighbors=6, n=2, return_inds=False, radius=6, high_thr=0.9, low_thr=0.1, prob_buffer=1e-5, num_trials=20):
     
     # X_scan = get_stim_amps_newlv(electrical_path, p)
 
@@ -212,12 +260,15 @@ def triplet_cleaning(X_expt_orig, probs_orig, T_orig, electrical_path, p, dir_th
     X_clean = []
     p_clean = []
     T_clean = []
+
+    removed_inds = []
     for i in range(len(X_expt_dirty)):
         neighbors = np.argsort(dists[i])[1:n_neighbors+1]
         mean = np.mean(probs_dirty[neighbors])
         stdev = np.std(probs_dirty[neighbors])
 
         if probs_dirty[i] > mean + n * stdev or probs_dirty[i] < mean -  n * stdev:
+            removed_inds.append(good_inds[i])
             continue
         else:
             X_clean.append(X_expt_dirty[i])
@@ -227,6 +278,8 @@ def triplet_cleaning(X_expt_orig, probs_orig, T_orig, electrical_path, p, dir_th
     X_clean = np.array(X_clean)
     p_clean = np.array(p_clean)
     T_clean = np.array(T_clean)
+
+    good_inds_tot = np.setdiff1d(good_inds, np.array(removed_inds))
 
     # X_expt_dirty, probs_dirty, T_dirty = fitting.enforce_3D_monotonicity(X_expt_orig, probs_orig, T_orig)
     
@@ -263,4 +316,8 @@ def triplet_cleaning(X_expt_orig, probs_orig, T_orig, electrical_path, p, dir_th
     
     # good_inds = np.where(probs_orig >= 0.2)[0]
 
-    return X_clean, p_clean, T_clean
+    if return_inds:
+        return good_inds_tot
+    
+    else:
+        return X_clean, p_clean, T_clean

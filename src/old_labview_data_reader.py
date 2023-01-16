@@ -59,5 +59,5 @@ def get_oldlabview_pp_data(analysis_path, pattern_no, movie_ind):
     b0 = b[:1000]
     b1 = b[1000:]
     data_traces = np.reshape(b1, [b0[0],b0[1],b0[2]], order='f')
-    channels = b0[3: 3+b0[2]]
+#     channels = b0[3: 3+b0[2]]
     return data_traces
