@@ -7,4 +7,4 @@ To use this repository, clone it and reconstruct the environment from the enviro
 
 Within this environment, now install the repository as a package using `pip` by running
 
-`pip install -e`
+`$ pip install -e`
