@@ -5,6 +5,6 @@ To use this repository, clone it and reconstruct the environment from the enviro
 
 `$ conda env create --name myenvironment --file environment.yml`
 
-Within this environment, now install the repository as a package using `pip` by running
+Within this environment, now install the repository as a package using `pip` by changing directories to the `multielectrode` directory and running
 
 `$ pip install -e`
