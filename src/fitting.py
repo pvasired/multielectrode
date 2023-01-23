@@ -466,7 +466,8 @@ def sigmoidND_nonlinear(X, w):
     response = 1 - np.multiply.reduce(1 - response_mat, axis=1)
     return response
 
-def generate_input_list(all_probs, amps, trials, w_inits_array):
+def generate_input_list(all_probs, amps, trials, w_inits_array,
+                        pass_inds=None):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -484,10 +485,28 @@ def generate_input_list(all_probs, amps, trials, w_inits_array):
     input_list = []
     for i in range(len(all_probs)):
         for j in range(len(all_probs[i])):
-            probs = all_probs[i][j]
-            T = trials[j]
-            X = amps[j]
+            if pass_inds is not None:
+                if pass_inds[i][j] is not None:
+                    probs = all_probs[i][j][pass_inds[i][j]]
+                    T = trials[j][pass_inds[i][j]]
+                    X = amps[j][pass_inds[i][j]]
 
+                else:
+                    probs = np.zeros(len(all_probs[i][j]))
+                    T = trials[j]
+                    X = amps[j]
+
+            else:
+                probs = all_probs[i][j]
+                T = trials[j]
+                X = amps[j]
+
+            good_T_inds = np.where(T > 0)[0]
+
+            probs = probs[good_T_inds]
+            T = T[good_T_inds]
+            X = X[good_T_inds]
+            
             input_list += [(X, probs, T, w_inits_array[i][j])]
 
     return input_list
@@ -686,9 +705,10 @@ def fit_triplet_surface_old(X_expt, probs, T, starting_m=2, max_sites=8,
 
     return last_opt[0]
 
+# R2_thresh=0.02
 def fit_surface(X_expt, probs, T, w_inits, 
-                        R2_thresh=0.02, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='l2', reg=0,
+                        R2_thresh=0.1, zero_prob=0.01, verbose=False,
+                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='none', reg=0,
                         min_prob=0.3):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
@@ -718,8 +738,6 @@ def fit_surface(X_expt, probs, T, w_inits,
     last_opt[0] (m x (d + 1) np.ndarray): The optimized set of parameters for the 
                                           optimized number of hotspots m using
                                           McFadden Pseudo-R2 and early stopping
-    probs_pred (N x 1 np.ndarray): The predicted probabilities at all amplitudes
-                                   according to the optimized parameters
     w_inits (list): The new initial guesses for each number of hotspots for the
                     next possible iteration of fitting
     """
@@ -731,10 +749,8 @@ def fit_surface(X_expt, probs, T, w_inits,
     if ~np.any(probs >= min_prob):
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
-        probs_pred = sigmoidND_nonlinear(sm.add_constant(X_orig, has_constant='add'), 
-                                         deg_opt)
 
-        return deg_opt, probs_pred, w_inits
+        return deg_opt, w_inits
     
     # If a large enough probability was detected, begin fitting
 
@@ -758,9 +774,10 @@ def fit_surface(X_expt, probs, T, w_inits,
     w_inits[0] = last_opt[0]
     last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
                             # procedure
-
+    BIC = len(w_inits[0].flatten()) * np.log(len(X_bin)) + 2 * last_opt[1]
+    HQC = 2 * len(w_inits[0].flatten()) * np.log(np.log(len(X_bin))) + 2 * last_opt[1]
     if verbose:
-        print(last_opt, last_R2)
+        print(last_opt, last_R2, BIC, HQC)
 
     for i in range(1, len(w_inits)):
         # Refit with next number of sites
@@ -771,23 +788,26 @@ def fit_surface(X_expt, probs, T, w_inits,
                         reg=reg)
         w_inits[i] = new_opt[0]
         new_R2 = new_opt[2]
+        BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
+        HQC = 2 * len(w_inits[i].flatten()) * np.log(np.log(len(X_bin))) + 2 * new_opt[1]
 
         if verbose:
-            print(new_opt, new_R2)
+            print(new_opt, new_R2, BIC, HQC)
 
         # If the pseudo-R2 improvement was too small, break and stop adding sites
-        if new_R2 - last_R2 <= R2_thresh:
+        # if new_R2 - last_R2 <= R2_thresh:
+        #     break
+
+        if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
             break
 
         last_opt = new_opt
         last_R2 = new_R2
 
-    probs_pred = sigmoidND_nonlinear(sm.add_constant(X_orig, has_constant='add'), last_opt[0])
-
-    return last_opt[0], probs_pred, w_inits
+    return last_opt[0], w_inits
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0, slope_bound=10):
+          reg_method='none', reg=0, slope_bound=10, bias_bound=None):
     """
     Fitting function for fitting data with a specified number of hotspots
     
@@ -815,7 +835,7 @@ def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
     # Set up bounds for constrained optimization
     bounds = []
     for j in range(len(w_init)):
-        bounds += [(None, np.log(z/(1-z)))]
+        bounds += [(bias_bound, np.log(z/(1-z)))]
         for i in range(X.shape[-1] - 1):
             bounds += [(-slope_bound, slope_bound)]
 
