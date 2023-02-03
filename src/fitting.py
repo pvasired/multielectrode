@@ -472,7 +472,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
 
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=20, T_step_size=0.01, T_n_steps=5000, ms=[1, 2],
-                          verbose=True):
+                          verbose=True, pass_inds=None, R2_cutoff=0.25, return_probs=False):
 
     """
     Parameters:
@@ -504,7 +504,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     print('Fitting dataset...')
 
-    input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array)
+    input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array,
+                                        pass_inds=pass_inds)
 
     pool = mp.Pool(processes=24)
     results = pool.starmap_async(fit_surface, input_list)
@@ -513,13 +514,15 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     params_curr = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     w_inits_array = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
-
+    R2s = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]))
     probs_curr = np.zeros(probs_empirical.shape)
+
     cnt = 0
     for i in range(len(probs_empirical)):
         for j in range(len(probs_empirical[i])):
             params_curr[i][j] = mp_output[cnt][0]
             w_inits_array[i][j] = mp_output[cnt][1]
+            R2s[i][j] = mp_output[cnt][2]
             
             probs_curr[i][j] = sigmoidND_nonlinear(
                                     sm.add_constant(amps[j], has_constant='add'), 
@@ -535,7 +538,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     num_params = 0
     for i in range(len(params_curr)):
         for j in range(len(params_curr[i])):
-            if ~np.all(params_curr[i][j][:, 0] == -np.inf):
+            if ~np.all(params_curr[i][j][:, 0] == -np.inf) and R2s[i][j] >= R2_cutoff:
                 X = jnp.array(sm.add_constant(amps[j], has_constant='add'))
                 # jac_dict[i][j] = activation_probs_jac(X, jnp.array(params_curr[i][j]))
                 jac_dict[i][j] = jax.jacfwd(activation_probs, argnums=1)(X, jnp.array(params_curr[i][j])).reshape(
@@ -598,7 +601,11 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         T_new_extra = jnp.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype='float32')
         T_new = T_new + T_new_extra
 
-    return np.array(T_new, dtype=int), w_inits_array, np.array(t_final)
+    if return_probs:
+        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final), probs_curr
+    
+    else:
+        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final)
 
 # Deprecated
 def sigmoidND_nonlinear(X, w):
@@ -901,7 +908,7 @@ def fit_surface(X_expt, probs, T, w_inits,
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
 
-        return deg_opt, w_inits
+        return deg_opt, w_inits, -1
     
     # If a large enough probability was detected, begin fitting
 
@@ -955,7 +962,7 @@ def fit_surface(X_expt, probs, T, w_inits,
         last_opt = new_opt
         last_R2 = new_R2
 
-    return last_opt[0], w_inits
+    return last_opt[0], w_inits, last_R2
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
           reg_method='none', reg=0, slope_bound=10, bias_bound=None):
