@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import optax
 import time
 import matplotlib.pyplot as plt
+from jaxopt import ProximalGradient, ProjectedGradient
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -399,6 +400,37 @@ def fisher_loss_array(probs_vec, transform_mat, jac_full, trials):
     return jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)))
     # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
 
+@jax.jit
+def fisher_loss_array_jaxopt(x, data):
+    """
+    Compute the Fisher loss across the entire array.
+
+    Parameters:
+    probs_vec (jnp.DeviceArray): The flattened array of probabilities across all meaningful
+                            (cell, pattern) combinations
+    transform_mat (jnp.DeviceArray): The transformation matrix to convert the trials array
+                                to the transformed trials array for multiple cells on
+                                the same pattern
+    jac_full (jnp.DeviceArray): The full precomputed Jacobian matrix
+    trials (jnp.DeviceArray): The input trials vector to be optimized
+
+    Returns:
+    loss (float): The whole array Fisher information loss
+    """
+    probs_vec, transform_mat, jac_full, T_prev = data
+    trials = T_prev + x
+    p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
+                                                            # overflow errors
+    t = jnp.dot(transform_mat, trials).flatten()
+    I_p = t / (p_model * (1 - p_model))
+
+    # Avoiding creating the large diagonal matrix and storing in memory
+    I_w = jnp.dot((jac_full.T * I_p), jac_full) / len(p_model)
+    
+    # Avoiding multiplying the matrices out and calculating the trace explicitly
+    return jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)))
+    # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
+
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0, 
                           step_size=1, n_steps=100, T_budget=5000, verbose=True):
@@ -443,22 +475,23 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
     
     losses = []
     for step in range(n_steps):
-        print(step)
+        if verbose:
+            print(step)
 
         # Update the optimizer
-        start_grad = time.time()
+        # start_grad = time.time()
         grads = update(jac_full, probs_vec, transform_mat, T_prev, T)
-        print(time.time() - start_grad)
+        # print(time.time() - start_grad)
 
-        start_update = time.time()
+        # start_update = time.time()
         updates, opt_state = optimizer.update(grads, opt_state, params=T)
-        print(time.time() - start_update)
+        # print(time.time() - start_update)
 
-        start_apply = time.time()
+        # start_apply = time.time()
         T = optax.apply_updates(T, updates)
-        print(time.time() - start_apply)
+        # print(time.time() - start_apply)
         
-        start_verbose = time.time()
+        # start_verbose = time.time()
         # If desired, compute the losses and store them
         if verbose:
             loss = fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
@@ -466,13 +499,14 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
                             reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget))
             print(loss_tuple)
             losses += [loss_tuple]
-        print(time.time() - start_verbose)
+        # print(time.time() - start_verbose)
 
     return np.array(losses), T
 
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=20, T_step_size=0.01, T_n_steps=5000, ms=[1, 2],
-                          verbose=True, pass_inds=None, R2_cutoff=0.25, return_probs=False):
+                          verbose=True, pass_inds=None, R2_cutoff=0.25, return_probs=False,
+                          disambiguate=True):
 
     """
     Parameters:
@@ -505,7 +539,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     print('Fitting dataset...')
 
     input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array,
-                                        pass_inds=pass_inds)
+                                        pass_inds=pass_inds, disambiguate=disambiguate)
 
     pool = mp.Pool(processes=24)
     results = pool.starmap_async(fit_surface, input_list)
@@ -625,7 +659,7 @@ def sigmoidND_nonlinear(X, w):
     return response
 
 def generate_input_list(all_probs, amps, trials, w_inits_array,
-                        pass_inds=None):
+                        pass_inds=None, disambiguate=True):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -664,6 +698,19 @@ def generate_input_list(all_probs, amps, trials, w_inits_array,
             probs = probs[good_T_inds]
             T = T[good_T_inds]
             X = X[good_T_inds]
+
+            if not(disambiguate):
+                good_inds = np.where((probs > 0) & (probs < 1))[0]
+
+                if len(good_inds) > 0:
+                    probs = probs[good_inds]
+                    X = X[good_inds]
+                    T = T[good_inds]
+
+                else:
+                    probs = np.array([])
+                    X = np.array([])
+                    T = np.array([])
             
             input_list += [(X, probs, T, w_inits_array[i][j])]
 
@@ -904,7 +951,7 @@ def fit_surface(X_expt, probs, T, w_inits,
     # If the probability never gets large enough, return the degenerate parameters
     # The degenerate parameters are a bias term of -np.inf and all slopes set to 0
     # These parameters cause probs_pred to be an array of all 0s
-    if ~np.any(probs >= min_prob):
+    if ~np.any(probs >= min_prob) or len(probs) == 0:
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
 
