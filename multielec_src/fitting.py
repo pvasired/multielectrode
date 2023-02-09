@@ -464,6 +464,9 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
     # optimizer = optax.sgd(learning_rate=scheduler)
     opt_state = optimizer.init(T)
 
+    init_function = fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+    reg = init_function / 20000 # 100000 too large
+
     # Update function for computing the gradient
     @jax.jit
     def update(jac_full, probs_vec, transform_mat, T_prev, T):
@@ -712,6 +715,11 @@ def generate_input_list(all_probs, amps, trials, w_inits_array,
                     X = np.array([])
                     T = np.array([])
             
+            if len(probs[probs > 0]) == 0:
+                probs = np.array([])
+                X = np.array([])
+                T = np.array([])
+
             input_list += [(X, probs, T, w_inits_array[i][j])]
 
     return input_list

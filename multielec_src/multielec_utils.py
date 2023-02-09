@@ -2,7 +2,7 @@ import numpy as np
 from scipy.io import loadmat
 import pickle
 import os
-import src.fitting as fitting
+import multielec_src.fitting as fitting
 from scipy.optimize import minimize
 import statsmodels.api as sm
 from itertools import product
