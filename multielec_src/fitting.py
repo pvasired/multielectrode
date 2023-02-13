@@ -303,6 +303,9 @@ def fsigmoid(X, w):
     """
     return 1.0 / (1.0 + np.exp(-X @ w))
 
+def exhaustive_flipping(sigmoid, low_limit=0.2):
+    possible_flips = np.where(sigmoid <= low_limit)[0]
+
 def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_prob=0.5):
     """
     Utility for disambiguating 0/1 probability for g-sort output.
@@ -627,8 +630,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         axs[2].set_ylabel('Regularized Loss, reg=' + str(reg))
 
         fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
-        plt.show()
         plt.savefig(f'plots_CL.png', dpi=300)
+        plt.show()
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 
