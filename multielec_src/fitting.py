@@ -17,6 +17,7 @@ import optax
 import time
 import matplotlib.pyplot as plt
 from jaxopt import ProximalGradient, ProjectedGradient
+from mpl_toolkits.mplot3d import Axes3D
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -303,9 +304,6 @@ def fsigmoid(X, w):
     """
     return 1.0 / (1.0 + np.exp(-X @ w))
 
-def exhaustive_flipping(sigmoid, low_limit=0.2):
-    possible_flips = np.where(sigmoid <= low_limit)[0]
-
 def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_prob=0.5):
     """
     Utility for disambiguating 0/1 probability for g-sort output.
@@ -339,6 +337,48 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     
     sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
+
+def disambiguate_fitting(X_expt, probs, T, ms, prob_high=0.8, prob_low=0.2, 
+                            verbose=False):
+    mid_inds = np.where((probs <= prob_high) & (probs >= prob_low))[0]
+
+    w_inits = []
+    for m in ms:
+        w_init = np.array(np.random.normal(size=(m, X_expt.shape[1]+1)),)
+        w_inits.append(w_init)
+
+    params, _, _ = fit_surface(X_expt[mid_inds], probs[mid_inds], T[mid_inds], w_inits,
+                                verbose=verbose)
+    probs_pred = sigmoidND_nonlinear(sm.add_constant(X_expt, has_constant='add'),
+                                             params)
+
+    # fig = plt.figure()
+    # fig.clear()
+    # ax = Axes3D(fig, auto_add_to_figure=False)
+    # fig.add_axes(ax)
+    # plt.xlabel(r'$I_1$ ($\mu$A)', fontsize=16)
+    # plt.ylabel(r'$I_2$ ($\mu$A)', fontsize=16)
+    # plt.xlim(-1.8, 1.8)
+    # plt.ylim(-1.8, 1.8)
+    # ax.set_zlim(-1.8, 1.8)
+    # ax.set_zlabel(r'$I_3$ ($\mu$A)', fontsize=16)
+
+    # scat = ax.scatter(X_expt[:, 0], 
+    #             X_expt[:, 1],
+    #             X_expt[:, 2], marker='o', c=probs_pred, s=20, alpha=0.8, vmin=0, vmax=1)
+
+    # plt.show()
+
+    flip_inds = np.setdiff1d(np.arange(len(probs), dtype=int), mid_inds)
+    for i in flip_inds:
+        LL_flip = (1 - probs[i]) * np.log(probs_pred[i]) + probs[i] * np.log(1 - probs_pred[i])
+        LL_stay = probs[i] * np.log(probs_pred[i]) + (1 - probs[i]) * np.log(1 - probs_pred[i])
+
+        if LL_flip > LL_stay:
+            probs[i] = 1 - probs[i]
+
+    return probs
+
 
 @jax.jit
 def activation_probs(x, w):
@@ -435,7 +475,7 @@ def fisher_loss_array_jaxopt(x, data):
     # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
 
 
-def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0, 
+def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=None, 
                           step_size=1, n_steps=100, T_budget=5000, verbose=True):
     """
     Fisher optimization loop using optax and AdamW optimizer.
@@ -467,8 +507,9 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
     # optimizer = optax.sgd(learning_rate=scheduler)
     opt_state = optimizer.init(T)
 
-    init_function = fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
-    reg = init_function / 20000 # 100000 too large
+    if reg is None:
+        init_function = fisher_loss_array(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+        reg = init_function / 20000 # 100000 too large
 
     # Update function for computing the gradient
     @jax.jit
@@ -512,7 +553,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=0,
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=20, T_step_size=0.01, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0.25, return_probs=False,
-                          disambiguate=True):
+                          disambiguate=True, empty_trials=1):
 
     """
     Parameters:
@@ -590,6 +631,13 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                 transform_mat.append(transform)     # append a e-vector (512)
 
                 probs_vec.append(probs_curr[i][j])  # append a c-vector (80)
+
+    if len(probs_vec) == 0:
+        if return_probs:
+            return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials, probs_curr
+        
+        else:
+            return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials
 
     transform_mat = jnp.array(transform_mat, dtype='float32')
     probs_vec = jnp.array(jnp.hstack(probs_vec), dtype='float32')
@@ -848,84 +896,10 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points
 
 #     return np.array(Xmono), np.array(ymono), np.array(Tmono)
 
-# Deprecated
-def get_w_old(m, X, y, nll_null, zero_prob=0.01, initialization=None, prev_initialization=None, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0):
-    
-    if type(initialization) == str:
-        if initialization == 'multiprocessing':
-            x0 = copy.copy(m)
-            m = len(x0)
-            z = 1 - (1 - zero_prob)**(1/m)
-
-    else:
-        z = 1 - (1 - zero_prob)**(1/m)
-        if prev_initialization is not None:
-            new_x0 = np.random.normal(size= ((m - len(prev_initialization)), X.shape[-1]))
-            new_x0[:, 0] = np.log(z/(1-z))
-            init = (prev_initialization / prev_initialization[:, 0][:, None]) * np.log(z/(1-z))
-            x0 = np.vstack((init, new_x0)).ravel()
-        elif initialization is not None:
-            x0 = initialization.ravel()
-        else:
-            x0 = np.random.normal(size=(m, X.shape[-1]))
-            x0[:,0] = np.log(z/(1-z))
-            x0 = x0.ravel()
-
-    bounds = []
-    for j in range(m):
-        bounds += [(None, np.log(z/(1-z))), (None, None), (None, None), (None, None)]
-
-    opt = minimize(negLL_hotspot, x0=x0, bounds=bounds,
-                       args=(X, y, False, reg_method, reg), method=method,
-                        jac=jac)
-    
-    return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
-
-# Deprecated
-def fit_triplet_surface_old(X_expt, probs, T, starting_m=2, max_sites=8, 
-                        R2_thresh=0.02, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=None, initialization=None, reg_method='none', reg=0):
-    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
-
-    ybar = np.mean(y_bin)
-    beta_null = np.log(ybar / (1 - ybar))
-    null_weights = np.concatenate((np.array([beta_null]), np.zeros(X_expt.shape[-1])))
-    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, reg_method, reg)
-
-    m = starting_m
-    last_opt = get_w(m, X_bin, y_bin, nll_null, initialization=initialization, zero_prob=zero_prob, method=method, jac=jac,
-                     reg_method=reg_method, reg=reg)
-    last_R2 = last_opt[2]
-    m += 1
-
-    if verbose:
-        print(last_opt, last_R2)
-    while m <= max_sites:
-        new_opt = get_w(m, X_bin, y_bin, nll_null, zero_prob=zero_prob,
-                        prev_initialization=last_opt[0],
-                        method=method,
-                        jac=jac,
-                        reg_method=reg_method,
-                        reg=reg)
-        new_R2 = new_opt[2]
-
-        if verbose:
-            print(new_opt, new_R2)
-        if new_R2 - last_R2 <= R2_thresh:
-            break
-
-        last_opt = new_opt
-        last_R2 = new_R2
-        m += 1
-
-    return last_opt[0]
-
-# R2_thresh=0.02
 def fit_surface(X_expt, probs, T, w_inits, 
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
                         method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='none', reg=0,
-                        min_prob=0.3):
+                        min_prob=0.2):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
     This function is primarily a wrapper for calling get_w() in the framework of 
