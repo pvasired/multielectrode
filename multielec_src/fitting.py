@@ -791,7 +791,7 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
             X = X[good_T_inds]
 
             if not(disambiguate):
-                good_inds = np.where((probs > 0) & (probs < 1))[0]
+                good_inds = np.where((probs != 0) & (probs != 1))[0]
 
                 if len(good_inds) > 0:
                     probs = probs[good_inds]
