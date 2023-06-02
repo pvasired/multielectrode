@@ -8,12 +8,9 @@ os.environ["CUDA_VISIBLE_DEVICES"]= '2'
 
 import numpy as np
 import multielec_src.fitting as fitting
-import multielec_src.multielec_utils as mutils
-from scipy.io import loadmat
 import multiprocessing as mp
 import statsmodels.api as sm
 from copy import deepcopy, copy
-import visionloader as vl
 from scipy.io import savemat
 
 def sample_spikes(p_true, t):
@@ -59,8 +56,8 @@ def get_performance_array(true_params, curr_probs, true_probs):
 
     return error / cnt
 
-NUM_CELLS = 120
-NUM_PATTERNS = 80
+NUM_CELLS = 2
+NUM_PATTERNS = 1
 ms = [1, 2, 3, 4]
 cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8

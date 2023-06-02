@@ -341,46 +341,48 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     # sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
-def disambiguate_fitting(X_expt, probs, T, ms, prob_high=0.8, prob_low=0.2, 
-                            verbose=False):
-    mid_inds = np.where((probs <= prob_high) & (probs >= prob_low))[0]
+def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5):
+    good_inds = np.where((probs != 0) & (probs != 1))[0]
+    zero_inds = np.where((probs == 0) | (probs == 1))[0]
 
-    w_inits = []
-    for m in ms:
-        w_init = np.array(np.random.normal(size=(m, X_expt.shape[1]+1)),)
-        w_inits.append(w_init)
-
-    params, _, _ = fit_surface(X_expt[mid_inds], probs[mid_inds], T[mid_inds], w_inits,
+    params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
+                                T[good_inds], w_inits,
                                 verbose=verbose)
-    probs_pred = sigmoidND_nonlinear(sm.add_constant(X_expt, has_constant='add'),
+
+    probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+                                                        has_constant='add'),
                                              params)
+    
+    probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
 
-    # fig = plt.figure()
-    # fig.clear()
-    # ax = Axes3D(fig, auto_add_to_figure=False)
-    # fig.add_axes(ax)
-    # plt.xlabel(r'$I_1$ ($\mu$A)', fontsize=16)
-    # plt.ylabel(r'$I_2$ ($\mu$A)', fontsize=16)
-    # plt.xlim(-1.8, 1.8)
-    # plt.ylim(-1.8, 1.8)
-    # ax.set_zlim(-1.8, 1.8)
-    # ax.set_zlabel(r'$I_3$ ($\mu$A)', fontsize=16)
+    return X_expt, probs, T
 
-    # scat = ax.scatter(X_expt[:, 0], 
-    #             X_expt[:, 1],
-    #             X_expt[:, 2], marker='o', c=probs_pred, s=20, alpha=0.8, vmin=0, vmax=1)
+    # # fig = plt.figure()
+    # # fig.clear()
+    # # ax = Axes3D(fig, auto_add_to_figure=False)
+    # # fig.add_axes(ax)
+    # # plt.xlabel(r'$I_1$ ($\mu$A)', fontsize=16)
+    # # plt.ylabel(r'$I_2$ ($\mu$A)', fontsize=16)
+    # # plt.xlim(-1.8, 1.8)
+    # # plt.ylim(-1.8, 1.8)
+    # # ax.set_zlim(-1.8, 1.8)
+    # # ax.set_zlabel(r'$I_3$ ($\mu$A)', fontsize=16)
 
-    # plt.show()
+    # # scat = ax.scatter(X_expt[:, 0], 
+    # #             X_expt[:, 1],
+    # #             X_expt[:, 2], marker='o', c=probs_pred, s=20, alpha=0.8, vmin=0, vmax=1)
 
-    flip_inds = np.setdiff1d(np.arange(len(probs), dtype=int), mid_inds)
-    for i in flip_inds:
-        LL_flip = (1 - probs[i]) * np.log(probs_pred[i]) + probs[i] * np.log(1 - probs_pred[i])
-        LL_stay = probs[i] * np.log(probs_pred[i]) + (1 - probs[i]) * np.log(1 - probs_pred[i])
+    # # plt.show()
 
-        if LL_flip > LL_stay:
-            probs[i] = 1 - probs[i]
+    # flip_inds = np.setdiff1d(np.arange(len(probs), dtype=int), mid_inds)
+    # for i in flip_inds:
+    #     LL_flip = (1 - probs[i]) * np.log(probs_pred[i]) + probs[i] * np.log(1 - probs_pred[i])
+    #     LL_stay = probs[i] * np.log(probs_pred[i]) + (1 - probs[i]) * np.log(1 - probs_pred[i])
 
-    return probs
+    #     if LL_flip > LL_stay:
+    #         probs[i] = 1 - probs[i]
+
+    # return probs
 
 
 @jax.jit
@@ -794,9 +796,10 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                 good_inds = np.where((probs != 0) & (probs != 1))[0]
 
                 if len(good_inds) > 0:
-                    probs = probs[good_inds]
-                    X = X[good_inds]
-                    T = T[good_inds]
+                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                    # probs = probs[good_inds]
+                    # X = X[good_inds]
+                    # T = T[good_inds]
 
                 else:
                     probs = np.array([])
