@@ -13,6 +13,7 @@ import collections
 import copy
 import jax
 import jax.numpy as jnp
+from jax.experimental import sparse
 import optax
 import time
 import matplotlib.pyplot as plt
@@ -478,6 +479,40 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
     sum_cells = jnp.reshape(sum_probs, (-1, trials.shape[1])).sum(axis=-1)
 
     # return jnp.max(sum_cells)
+    return jax.scipy.special.logsumexp(sum_cells)
+
+@jax.jit
+def fisher_loss_max_sparse(probs_vec, transform_mat, jac_full, trials):
+    """
+    Compute the Fisher loss across the entire array.
+
+    Parameters:
+    probs_vec (jnp.DeviceArray): The flattened array of probabilities across all meaningful
+                            (cell, pattern) combinations
+    transform_mat (jnp.DeviceArray): The transformation matrix to convert the trials array
+                                to the transformed trials array for multiple cells on
+                                the same pattern
+    jac_full (jnp.DeviceArray): The full precomputed Jacobian matrix
+    trials (jnp.DeviceArray): The input trials vector to be optimized
+
+    Returns:
+    loss (float): The whole array Fisher information loss
+    """
+    p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
+                                                            # overflow errors
+    t = jnp.dot(transform_mat, trials).flatten()
+    I_p = t / (p_model * (1 - p_model))
+
+    # Avoiding creating the large diagonal matrix and storing in memory
+    I_w = jnp.dot((jac_full.T * I_p), jac_full) / len(p_model)
+
+    I_w_sp = sparse.CSR.fromdense(I_w)
+    jac_full_sp = sparse.CSR.fromdense(jac_full)
+    
+    # Avoiding multiplying the matrices out and calculating the trace explicitly
+    sum_probs = jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)), axis=0)
+    sum_cells = jnp.reshape(sum_probs, (-1, trials.shape[1])).sum(axis=-1)
+
     return jax.scipy.special.logsumexp(sum_cells)
 
 @jax.jit

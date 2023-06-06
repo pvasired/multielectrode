@@ -4,7 +4,6 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1" # export OPENBLAS_NUM_THREADS=1
 os.environ["MKL_NUM_THREADS"] = "1" # export MKL_NUM_THREADS=1
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1" # export VECLIB_MAXIMUM_THREADS=1
 os.environ["NUMEXPR_NUM_THREADS"] = "1" # export NUMEXPR_NUM_THREADS=1
-os.environ["CUDA_VISIBLE_DEVICES"]= '2'
 
 import numpy as np
 import multielec_src.fitting as fitting
@@ -12,6 +11,7 @@ import multiprocessing as mp
 import statsmodels.api as sm
 from copy import deepcopy, copy
 from scipy.io import savemat
+import time
 
 def sample_spikes(p_true, t):
     p_true, t = np.array(p_true), np.array(t).astype(int)
@@ -56,8 +56,8 @@ def get_performance_array(true_params, curr_probs, true_probs):
 
     return error / cnt
 
-NUM_CELLS = 10
-NUM_PATTERNS = 5
+NUM_CELLS = 8
+NUM_PATTERNS = 3
 ms = [1, 2, 3, 4]
 cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8
@@ -121,10 +121,12 @@ performances = []
 performances_uniform = []
 num_samples = []
 num_samples_uniform = []
+iter_times = []
 
 iter_cnt = 0
 while True:
     if iter_cnt == 0:
+        start_time = time.time()
         T_new, w_inits_array, t_final, probs_curr, params_curr = fitting.fisher_sampling_1elec(
                                         probs_empirical, 
                                         T_prev, amps_scan,
@@ -136,12 +138,16 @@ while True:
                                         R2_cutoff=R2_cutoff,
                                         min_prob=prob_low)
 
+        iter_time = time.time() - start_time
+        iter_times.append(iter_time)
+
         performance = get_performance_array(params_true, probs_curr, probs_true_scan)
         performance_uniform = performance
 
         w_inits_array_uniform = deepcopy(w_inits_array)
         
     else:
+        start_time = time.time()
         T_new, w_inits_array, t_final, probs_curr, params_curr = fitting.fisher_sampling_1elec(
                                         probs_empirical, 
                                         T_prev, amps_scan,
@@ -154,6 +160,9 @@ while True:
                                         disambiguate=disambiguate,
                                         R2_cutoff=R2_cutoff,
                                         min_prob=prob_low)
+
+        iter_time = time.time() - start_time
+        iter_times.append(iter_time)
         
         performance = get_performance_array(params_true, probs_curr, probs_true_scan)
 
@@ -268,4 +277,4 @@ savemat(f'fake_data_n{NUM_CELLS}_p{NUM_PATTERNS}_disambiguate{disambiguate}.mat'
          'baseline_trials': baseline_trials, 'probs_true_scan': probs_true_scan, 
          'params_true': params_true, 'amps_scan': amps_scan, 'probs_curr': probs_curr, 
          'params_curr': params_curr, 'probs_empirical': probs_empirical, 'init_trials': init_trials,
-         'init_amps': init_amps})
+         'init_amps': init_amps, 'iter_times': iter_times})
