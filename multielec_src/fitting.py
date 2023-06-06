@@ -546,7 +546,6 @@ def fisher_loss_array_jaxopt(x, data):
     return jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)))
     # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
 
-
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=None, 
                           step_size=1, n_steps=100, T_budget=5000, verbose=True):
     """

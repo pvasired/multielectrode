@@ -63,6 +63,8 @@ cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8
 bias_var = 2
 slope_var = 5
+slope_bound = 10
+zero_prob = 0.01
 
 amps_scan = np.array([np.array(np.meshgrid(np.linspace(-2, 2, 21), 
                                 np.linspace(-2, 2, 21),
@@ -80,6 +82,10 @@ for i in range(len(cell_positions)):
         params[l, :] = np.random.normal(np.random.choice([-5, 5]), slope_var, size=amps_scan[j].shape[1]+1)
 
     params[:, 0] = np.random.normal(bias_mean, bias_var, len(params[:, 0]))
+    z = 1 - (1 - zero_prob)**(1/m)
+    params[:, 0][params[:, 0] > np.log(z/(1-z))] = np.log(z/(1-z))
+    params[:, 1:][params[:, 1:] > slope_bound] = slope_bound
+    params[:, 1:][params[:, 1:] < -slope_bound] = -slope_bound
     params_true[i][j] = params
 
 for i in range(len(probs_true_scan)):
