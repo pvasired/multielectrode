@@ -56,8 +56,8 @@ def get_performance_array(true_params, curr_probs, true_probs):
 
     return error / cnt
 
-NUM_CELLS = 2
-NUM_PATTERNS = 1
+NUM_CELLS = 8
+NUM_PATTERNS = 4
 ms = [1, 2, 3, 4]
 cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8
