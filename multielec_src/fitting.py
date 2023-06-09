@@ -704,11 +704,12 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                 probs_vec.append(probs_curr[i][j])  # append a c-vector (80)
 
     if len(probs_vec) == 0:
-        if return_probs:
-            return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials, probs_curr, params_curr
+        raise ValueError("No valid probabilities found.")
+        # if return_probs:
+        #     return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials, probs_curr, params_curr
         
-        else:
-            return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials
+        # else:
+        #     return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials
 
     transform_mat = jnp.array(transform_mat, dtype='float32')
     probs_vec = jnp.array(jnp.hstack(probs_vec), dtype='float32')
