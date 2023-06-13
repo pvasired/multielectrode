@@ -754,7 +754,6 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
         fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
         plt.savefig(f'plots_CL.png', dpi=300)
-        plt.show()
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 
@@ -832,7 +831,7 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
             if not(disambiguate):
                 good_inds = np.where((probs != 0) & (probs != 1))[0]
 
-                if len(good_inds) > 0:
+                if len(good_inds) >= min_inds:
                     X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
                     # probs = probs[good_inds]
                     # X = X[good_inds]
@@ -843,7 +842,7 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                     X = np.array([])
                     T = np.array([])
             
-            if len(probs[probs > min_prob*spont_factor]) <= min_inds:
+            if len(probs[probs > min_prob]) == 0:
                 probs = np.array([])
                 X = np.array([])
                 T = np.array([])
@@ -884,6 +883,9 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points=100):
     point = Xdata[index]
+    if np.linalg.norm(point) == 0:
+        return True
+        
     direction = point / np.linalg.norm(point)
 
     scaling = np.linspace(0.1, np.linalg.norm(point), num_points)

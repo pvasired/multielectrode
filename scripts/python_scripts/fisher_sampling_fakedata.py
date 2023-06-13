@@ -56,8 +56,8 @@ def get_performance_array(true_params, curr_probs, true_probs):
 
     return error / cnt
 
-NUM_CELLS = 6
-NUM_PATTERNS = 2
+NUM_CELLS = 10
+NUM_PATTERNS = 5
 ms = [1, 2, 3, 4]
 cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8
@@ -112,7 +112,7 @@ disambiguate = False
 verbose = True
 R2_cutoff = 0
 prob_low = 1 / init_trials
-min_inds = 50
+min_inds = 10
 
 for i in range(len(T_prev)):
     init_inds = np.random.choice(np.arange(len(T_prev[i]), dtype=int), size=init_amps,
@@ -177,7 +177,7 @@ while True:
 
         input_list_uniform = fitting.generate_input_list(probs_empirical_uniform, amps_scan, 
                                                             T_prev_uniform, w_inits_array_uniform, prob_low,
-                                                            disambiguate=disambiguate)
+                                                            disambiguate=disambiguate, min_inds=min_inds)
 
         pool = mp.Pool(processes=24)
         results_uniform = pool.starmap_async(fitting.fit_surface, input_list_uniform)
@@ -254,7 +254,7 @@ for i in range(len(w_inits_array_baseline)):
         w_inits_array_baseline[i][j] = w_inits
 
 input_list_baseline = fitting.generate_input_list(probs_empirical_baseline, amps_scan, T_prev_baseline, w_inits_array_baseline, 1 / baseline_trials,
-                                                    disambiguate=disambiguate)
+                                                    disambiguate=disambiguate, min_inds=min_inds)
 
 pool = mp.Pool(processes=24)
 results_baseline = pool.starmap_async(fitting.fit_surface, input_list_baseline)
