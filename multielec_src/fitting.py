@@ -624,7 +624,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
-                          disambiguate=True, empty_trials=1, min_prob=0.2):
+                          disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50):
 
     """
     Parameters:
@@ -657,7 +657,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     print('Fitting dataset...')
 
     input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array, min_prob,
-                                        pass_inds=pass_inds, disambiguate=disambiguate)
+                                        pass_inds=pass_inds, disambiguate=disambiguate,
+                                        min_inds=min_inds)
 
     pool = mp.Pool(processes=24)
     results = pool.starmap_async(fit_surface, input_list)
