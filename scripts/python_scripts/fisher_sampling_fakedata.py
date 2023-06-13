@@ -112,6 +112,7 @@ disambiguate = False
 verbose = True
 R2_cutoff = 0
 prob_low = 1 / init_trials
+min_inds = 50
 
 for i in range(len(T_prev)):
     init_inds = np.random.choice(np.arange(len(T_prev[i]), dtype=int), size=init_amps,
@@ -142,7 +143,8 @@ while True:
                                         return_probs=True,
                                         disambiguate=disambiguate,
                                         R2_cutoff=R2_cutoff,
-                                        min_prob=prob_low)
+                                        min_prob=prob_low,
+                                        min_inds=min_inds)
 
         iter_time = time.time() - start_time
         iter_times.append(iter_time)
@@ -165,7 +167,8 @@ while True:
                                         w_inits_array=w_inits_array,
                                         disambiguate=disambiguate,
                                         R2_cutoff=R2_cutoff,
-                                        min_prob=prob_low)
+                                        min_prob=prob_low,
+                                        min_inds=min_inds)
 
         iter_time = time.time() - start_time
         iter_times.append(iter_time)
