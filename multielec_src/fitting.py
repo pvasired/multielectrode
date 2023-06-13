@@ -754,6 +754,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
         fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
         plt.savefig(f'plots_CL.png', dpi=300)
+        plt.show(block=False)
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 
