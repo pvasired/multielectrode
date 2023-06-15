@@ -8,7 +8,6 @@ from scipy.optimize import minimize
 from matplotlib.patches import Ellipse
 import matplotlib.transforms as transforms
 from itertools import chain, combinations
-import multiprocessing as mp
 import collections
 import copy
 import jax
@@ -668,7 +667,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     cnt = 0
     for i in range(len(probs_empirical)):
         for j in range(len(probs_empirical[i])):
-	    mp_output = fit_surface(input_list[cnt])
+            X, probs, T, w_inits = tuple(input_list[cnt])
+            mp_output = fit_surface(X, probs, T, w_inits)
             params_curr[i][j] = mp_output[0]
             w_inits_array[i][j] = mp_output[1]
             R2s[i][j] = mp_output[2]
