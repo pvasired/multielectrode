@@ -660,11 +660,6 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds)
 
-    pool = mp.Pool(processes=24)
-    results = pool.starmap_async(fit_surface, input_list)
-    mp_output = results.get()
-    pool.close()
-
     params_curr = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     w_inits_array = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     R2s = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]))
@@ -673,9 +668,10 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     cnt = 0
     for i in range(len(probs_empirical)):
         for j in range(len(probs_empirical[i])):
-            params_curr[i][j] = mp_output[cnt][0]
-            w_inits_array[i][j] = mp_output[cnt][1]
-            R2s[i][j] = mp_output[cnt][2]
+	    mp_output = fit_surface(input_list[cnt])
+            params_curr[i][j] = mp_output[0]
+            w_inits_array[i][j] = mp_output[1]
+            R2s[i][j] = mp_output[2]
             
             probs_curr[i][j] = sigmoidND_nonlinear(
                                     sm.add_constant(amps[j], has_constant='add'), 
