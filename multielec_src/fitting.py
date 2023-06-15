@@ -789,7 +789,7 @@ def sigmoidND_nonlinear(X, w):
 
 def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        spont_factor=2):
+                        spont_limit=0.2):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -830,7 +830,7 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
             X = X[good_T_inds]
 
             if not(disambiguate):
-                good_inds = np.where((probs != 0) & (probs != 1))[0]
+                good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
                     X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
