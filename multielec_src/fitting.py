@@ -623,7 +623,8 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
-                          disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50):
+                          disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
+                          plot_name='plots_CL'):
 
     """
     Parameters:
@@ -749,7 +750,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         axs[2].set_ylabel('Regularized Loss, reg=' + str(reg))
 
         fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
-        plt.savefig(f'plots_CL.png', dpi=300)
+        plt.savefig(f'{plot_name}.png', dpi=300)
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 
