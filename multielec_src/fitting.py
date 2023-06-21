@@ -18,6 +18,7 @@ import time
 import matplotlib.pyplot as plt
 from jaxopt import ProximalGradient, ProjectedGradient
 from mpl_toolkits.mplot3d import Axes3D
+import multielec_src.multielec_utils as mutils
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -341,21 +342,46 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     # sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
-def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5):
-    good_inds = np.where((probs != 0) & (probs != 1))[0]
-    zero_inds = np.where((probs == 0) | (probs == 1))[0]
+def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
+                         spont_limit=0.2, R2_thresh=0.1):
+    good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
+    zero_inds = np.where((probs < spont_limit) | (probs == 1))[0]
 
     params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
                                 T[good_inds], w_inits,
-                                verbose=verbose)
+                                verbose=verbose, R2_thresh=R2_thresh)
 
     probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
                                                         has_constant='add'),
                                              params)
     
-    probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+    probs[zero_inds[np.where(probs_pred_zero >= thr)[0]]] = 1
+    # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
 
-    return X_expt, probs, T
+    dists = cdist(X_expt, X_expt)
+    X_clean = []
+    p_clean = []
+    T_clean = []
+
+    n_neighbors = 8
+    n = 2
+    for i in range(len(X_expt)):
+        neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+        mean = np.mean(probs[neighbors])
+        stdev = np.std(probs[neighbors])
+
+        if probs[i] > mean + n * stdev or probs[i] < mean -  n * stdev:
+            continue
+        else:
+            X_clean.append(X_expt[i])
+            p_clean.append(probs[i])
+            T_clean.append(T[i])
+
+    X_clean = np.array(X_clean)
+    p_clean = np.array(p_clean)
+    T_clean = np.array(T_clean)
+
+    return X_clean, p_clean, T_clean
 
     # # fig = plt.figure()
     # # fig.clear()
@@ -785,7 +811,7 @@ def sigmoidND_nonlinear(X, w):
 
 def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        spont_limit=0.2):
+                        spont_limit=0):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -826,10 +852,12 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
             X = X[good_T_inds]
 
             if not(disambiguate):
-                good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
+                good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
-                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                    X, probs, T = mutils.triplet_cleaning(X, probs, T)
+                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                                                       spont_limit=spont_limit)
                     # probs = probs[good_inds]
                     # X = X[good_inds]
                     # T = T[good_inds]
