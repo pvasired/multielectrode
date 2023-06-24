@@ -343,7 +343,30 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     return sigmoid
 
 def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
-                         spont_limit=0.2, R2_thresh=0.1):
+                         spont_limit=0.2, R2_thresh=0.4, n_neighbors=6,
+                         n=1):
+
+    dists = cdist(X_expt, X_expt)
+    X_clean = []
+    p_clean = []
+    T_clean = []
+
+    for i in range(len(X_expt)):
+        neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+        mean = np.mean(probs[neighbors])
+        stdev = np.std(probs[neighbors])
+
+        if probs[i] > mean + n * stdev or probs[i] < mean -  n * stdev:
+            continue
+        else:
+            X_clean.append(X_expt[i])
+            p_clean.append(probs[i])
+            T_clean.append(T[i])
+
+    X_expt = np.array(X_clean)
+    probs = np.array(p_clean)
+    T = np.array(T_clean)
+
     good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
     zero_inds = np.where((probs < spont_limit) | (probs == 1))[0]
 
@@ -355,7 +378,7 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
                                                         has_constant='add'),
                                              params)
     
-    probs[zero_inds[np.where(probs_pred_zero >= thr)[0]]] = 1
+    probs[zero_inds[np.where(probs_pred_zero > thr)[0]]] = 1
     # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
 
     dists = cdist(X_expt, X_expt)
@@ -363,8 +386,6 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
     p_clean = []
     T_clean = []
 
-    n_neighbors = 8
-    n = 2
     for i in range(len(X_expt)):
         neighbors = np.argsort(dists[i])[1:n_neighbors+1]
         mean = np.mean(probs[neighbors])
@@ -650,7 +671,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
-                          plot_name='plots_CL'):
+                          plot_name='plots_CL', trial_cap=25, entropy_buffer=0.2):
 
     """
     Parameters:
@@ -712,6 +733,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     transform_mat = []
     probs_vec = []
     num_params = 0
+    entropy_inds = []
+
     for i in range(len(params_curr)):
         for j in range(len(params_curr[i])):
             if ~np.all(params_curr[i][j][:, 0] == -np.inf) and R2s[i][j] >= R2_cutoff:
@@ -721,11 +744,20 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                                 (len(X), params_curr[i][j].shape[0]*params_curr[i][j].shape[1]))  # c x l
                 num_params += jac_dict[i][j].shape[1]
 
+                probs_pred = sigmoidND_nonlinear(sm.add_constant(amps[j], 
+                                                    has_constant='add'), 
+                                                    params_curr[i][j])
+                entropy_inds_j = np.where((probs_pred > 0.5 - entropy_buffer) & (probs_pred < 0.5 + entropy_buffer))[0]
+                for ind in entropy_inds_j:
+                    entropy_inds.append((j, ind))
+                
                 transform = jnp.zeros(len(T_prev))
                 transform = transform.at[j].set(1)
                 transform_mat.append(transform)     # append a e-vector (512)
 
                 probs_vec.append(probs_curr[i][j])  # append a c-vector (80)
+
+    entropy_inds = np.array(entropy_inds)
 
     if len(probs_vec) == 0:
         raise ValueError("No valid probabilities found.")
@@ -786,11 +818,20 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         T_new_extra = jnp.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype='float32')
         T_new = T_new + T_new_extra
 
+    T_new = np.array(T_new)
+    capped_inds = np.where(T_new + T_prev >= trial_cap)
+    T_new[capped_inds[0], capped_inds[1]] = trial_cap - T_prev[capped_inds[0], capped_inds[1]]
+
+    if np.sum(T_new) < budget:
+        random_entropy = np.random.choice(len(entropy_inds), size=int(budget - np.sum(T_new)))
+        for ind in random_entropy:
+            T_new[entropy_inds[ind][0]][entropy_inds[ind][1]] += 1
+        
     if return_probs:
-        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final), probs_curr, params_curr
+        return T_new.astype(int), w_inits_array, np.array(t_final), probs_curr, params_curr, fig
     
     else:
-        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final)
+        return T_new.astype(int), w_inits_array, np.array(t_final), fig
 
 # Deprecated
 def sigmoidND_nonlinear(X, w):
@@ -811,7 +852,7 @@ def sigmoidND_nonlinear(X, w):
 
 def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        spont_limit=0):
+                        spont_limit=0.2):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -856,11 +897,8 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
 
                 if len(good_inds) >= min_inds:
                     X, probs, T = mutils.triplet_cleaning(X, probs, T)
-                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
-                                                       spont_limit=spont_limit)
-                    # probs = probs[good_inds]
-                    # X = X[good_inds]
-                    # T = T[good_inds]
+                    # X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                    #                                    spont_limit=spont_limit)
 
                 else:
                     probs = np.array([])
