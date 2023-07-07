@@ -19,6 +19,8 @@ import matplotlib.pyplot as plt
 from jaxopt import ProximalGradient, ProjectedGradient
 from mpl_toolkits.mplot3d import Axes3D
 import multielec_src.multielec_utils as mutils
+import multiprocessing as mp
+from sklearn.neighbors import LocalOutlierFactor
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -342,43 +344,71 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     # sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
-def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
-                         spont_limit=0.2, R2_thresh=0.4, n_neighbors=6,
-                         n=1):
+def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.3,
+                         spont_limit=0.2, R2_thresh=0.1, n_neighbors=6,
+                         dist_thr=0.3, n_neighbors_LOF=5, n=3):
 
-    dists = cdist(X_expt, X_expt)
-    X_clean = []
-    p_clean = []
-    T_clean = []
+    # dists = cdist(X_expt, X_expt)
+    # X_clean = []
+    # p_clean = []
+    # T_clean = []
 
-    for i in range(len(X_expt)):
-        neighbors = np.argsort(dists[i])[1:n_neighbors+1]
-        mean = np.mean(probs[neighbors])
-        stdev = np.std(probs[neighbors])
+    # for i in range(len(X_expt)):
+    #     neighbors = np.where((dists[i] <= dist_thr) & (dists[i] != 0))[0]
+        
+    #     if len(neighbors) < n_neighbors:
+    #         X_clean.append(X_expt[i])
+    #         p_clean.append(probs[i])
+    #         T_clean.append(T[i])
 
-        if probs[i] > mean + n * stdev or probs[i] < mean -  n * stdev:
-            continue
-        else:
-            X_clean.append(X_expt[i])
-            p_clean.append(probs[i])
-            T_clean.append(T[i])
+    #         continue
 
-    X_expt = np.array(X_clean)
-    probs = np.array(p_clean)
-    T = np.array(T_clean)
+    #     # neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+    #     mean = np.mean(probs[neighbors])
+    #     stdev = np.std(probs[neighbors])
 
+    #     if probs[i] > mean + n * stdev or probs[i] < mean -  n * stdev:
+    #         continue
+    #     else:
+    #         X_clean.append(X_expt[i])
+    #         p_clean.append(probs[i])
+    #         T_clean.append(T[i])
+
+    # X_clean = np.array(X_clean)
+    # p_clean = np.array(p_clean)
+    # T_clean = np.array(T_clean)
+
+    # X_expt, probs, T = X_clean, p_clean, T_clean
+    
     good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
     zero_inds = np.where((probs < spont_limit) | (probs == 1))[0]
 
-    params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
-                                T[good_inds], w_inits,
+    clf = LocalOutlierFactor(n_neighbors=n_neighbors_LOF)
+    outlier_vals = clf.fit_predict(X_expt[good_inds])
+
+    inlier_inds = good_inds[np.where(outlier_vals > 0)[0]]
+    outlier_inds = good_inds[np.where(outlier_vals < 0)[0]]
+
+    zero_inds = np.unique(np.hstack([zero_inds, outlier_inds]))
+
+    params, _, _ = fit_surface(X_expt[inlier_inds], probs[inlier_inds], 
+                                T[inlier_inds], w_inits,
                                 verbose=verbose, R2_thresh=R2_thresh)
 
     probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
                                                         has_constant='add'),
                                              params)
     
-    probs[zero_inds[np.where(probs_pred_zero > thr)[0]]] = 1
+    good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
+    # good_one_inds = zero_inds[np.where(probs_pred_zero > 0.9)[0]]
+    probs[good_zero_inds] = 0
+    # probs[good_one_inds] = 1
+
+    total_inds = np.hstack([inlier_inds, good_zero_inds])#, good_one_inds])
+
+    X_expt, probs, T = X_expt[total_inds], probs[total_inds], T[total_inds]
+
+    # return X_expt[total_inds], probs[total_inds], T[total_inds]
     # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
 
     dists = cdist(X_expt, X_expt)
@@ -387,7 +417,16 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
     T_clean = []
 
     for i in range(len(X_expt)):
-        neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+        neighbors = np.where((dists[i] <= dist_thr) & (dists[i] != 0))[0]
+
+        if len(neighbors) < n_neighbors:
+            X_clean.append(X_expt[i])
+            p_clean.append(probs[i])
+            T_clean.append(T[i])
+
+            continue
+
+        # neighbors = np.argsort(dists[i])[1:n_neighbors+1]
         mean = np.mean(probs[neighbors])
         stdev = np.std(probs[neighbors])
 
@@ -402,7 +441,37 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
     p_clean = np.array(p_clean)
     T_clean = np.array(T_clean)
 
-    return X_clean, p_clean, T_clean
+    X_expt, probs, T = X_clean, p_clean, T_clean
+    
+    # good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
+    # zero_inds = np.where((probs < spont_limit) | (probs == 1))[0]
+
+    # clf = LocalOutlierFactor(n_neighbors=n_neighbors_LOF)
+    # outlier_vals = clf.fit_predict(X_expt[good_inds])
+
+    # inlier_inds = good_inds[np.where(outlier_vals > 0)[0]]
+    # outlier_inds = good_inds[np.where(outlier_vals < 0)[0]]
+
+    # zero_inds = np.unique(np.hstack([zero_inds, outlier_inds]))
+
+    # params, _, _ = fit_surface(X_expt[inlier_inds], probs[inlier_inds], 
+    #                             T[inlier_inds], w_inits,
+    #                             verbose=verbose, R2_thresh=R2_thresh)
+
+    # probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+    #                                                     has_constant='add'),
+    #                                          params)
+    
+    # good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
+    # # good_one_inds = zero_inds[np.where(probs_pred_zero > 0.9)[0]]
+    # probs[good_zero_inds] = 0
+    # # probs[good_one_inds] = 1
+
+    # total_inds = np.hstack([inlier_inds, good_zero_inds])#, good_one_inds])
+
+    # X_expt, probs, T = X_expt[total_inds], probs[total_inds], T[total_inds]
+
+    return X_expt, probs, T
 
     # # fig = plt.figure()
     # # fig.clear()
@@ -671,7 +740,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
-                          plot_name='plots_CL', trial_cap=25, entropy_buffer=0.2):
+                          plot_name='plots_CL', trial_cap=50, entropy_buffer=0.05, THREADS=48):
 
     """
     Parameters:
@@ -707,6 +776,11 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds)
 
+    pool = mp.Pool(processes=THREADS)
+    results = pool.starmap_async(fit_surface, input_list)
+    mp_output = results.get()
+    pool.close()
+
     params_curr = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     w_inits_array = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     R2s = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]))
@@ -715,11 +789,11 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     cnt = 0
     for i in range(len(probs_empirical)):
         for j in range(len(probs_empirical[i])):
-            X, probs, T, w_inits = tuple(input_list[cnt])
-            mp_output = fit_surface(X, probs, T, w_inits)
-            params_curr[i][j] = mp_output[0]
-            w_inits_array[i][j] = mp_output[1]
-            R2s[i][j] = mp_output[2]
+            # X, probs, T, w_inits = tuple(input_list[cnt])
+            # mp_output = fit_surface(X, probs, T, w_inits)
+            params_curr[i][j] = mp_output[cnt][0]
+            w_inits_array[i][j] = mp_output[cnt][1]
+            R2s[i][j] = mp_output[cnt][2]
             
             probs_curr[i][j] = sigmoidND_nonlinear(
                                     sm.add_constant(amps[j], has_constant='add'), 
@@ -820,7 +894,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     T_new = np.array(T_new)
     capped_inds = np.where(T_new + T_prev >= trial_cap)
-    T_new[capped_inds[0], capped_inds[1]] = trial_cap - T_prev[capped_inds[0], capped_inds[1]]
+    T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],
+                                                    0, None)
 
     if np.sum(T_new) < budget:
         random_entropy = np.random.choice(len(entropy_inds), size=int(budget - np.sum(T_new)))
@@ -896,9 +971,18 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
-                    X, probs, T = mutils.triplet_cleaning(X, probs, T)
-                    # X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
-                    #                                    spont_limit=spont_limit)
+                    # X, probs, T = mutils.triplet_cleaning(X, probs, T)
+
+                    # mask = (X_orig[:, None] == X).all(-1).any(-1)
+                    # uncommon_inds = np.setdiff1d(np.arange(len(X_orig), dtype=int), np.where(mask)[0])
+                    # X = np.vstack([X, X_orig[uncommon_inds]])
+                    # probs = np.hstack([probs, np.zeros(len(uncommon_inds))])
+                    # T = np.hstack([T, np.ones(len(uncommon_inds)) * 20])
+
+                    # X, probs, T = mutils.triplet_cleaning(X, probs, T)
+
+                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                                                       spont_limit=spont_limit)
 
                 else:
                     probs = np.array([])
@@ -944,7 +1028,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 
     return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
-def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points=100):
+def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=1.0, num_points=20):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
         return True
