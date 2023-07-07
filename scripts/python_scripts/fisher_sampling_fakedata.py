@@ -56,8 +56,8 @@ def get_performance_array(true_params, curr_probs, true_probs):
 
     return error / cnt
 
-NUM_CELLS = 9
-NUM_PATTERNS = 3
+NUM_CELLS = 100
+NUM_PATTERNS = 30
 ms = [1, 2, 3, 4]
 cell_positions = np.random.choice(NUM_PATTERNS, size=NUM_CELLS, replace=True)
 bias_mean = -8
@@ -102,11 +102,11 @@ num_iters = 5
 T_prev = np.zeros((amps_scan.shape[0], amps_scan.shape[1]), dtype=float)
 budget = T_prev.shape[0] * T_prev.shape[1] * 0.5 #int(total_budget / num_iters)
 reg = None # 20, 50
-T_step_size = 0.05 # 0.05, 0.01
-T_n_steps = 5000    # 5000
+T_step_size = 0.1 # 0.05, 0.01
+T_n_steps = 1000    # 5000
 
 init_trials = 10
-init_amps = 500
+init_amps = 200
 ms = [1, 2, 3, 4]
 disambiguate = False
 verbose = True
