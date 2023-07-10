@@ -19,6 +19,7 @@ import time
 import matplotlib.pyplot as plt
 from jaxopt import ProximalGradient, ProjectedGradient
 from mpl_toolkits.mplot3d import Axes3D
+import multielec_src.multielec_utils as mutils
 
 def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
                               interaction=True):
@@ -342,9 +343,10 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     # sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
-def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5):
-    good_inds = np.where((probs != 0) & (probs != 1))[0]
-    zero_inds = np.where((probs == 0) | (probs == 1))[0]
+def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
+                         spont_limit=0.2):
+    good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
+    zero_inds = np.where((probs <= spont_limit) | (probs == 1))[0]
 
     params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
                                 T[good_inds], w_inits,
@@ -354,9 +356,11 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5):
                                                         has_constant='add'),
                                              params)
     
-    probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+    good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
+    good_inds_tot = np.concatenate([good_inds, good_zero_inds])
+    # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
 
-    return X_expt, probs, T
+    return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
 
     # # fig = plt.figure()
     # # fig.clear()
@@ -830,10 +834,12 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
             X = X[good_T_inds]
 
             if not(disambiguate):
-                good_inds = np.where((probs >= spont_limit) & (probs != 1))[0]
+                good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
+                    X, probs, T = mutils.triplet_cleaning(X, probs, T)
                     X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                    
                     # probs = probs[good_inds]
                     # X = X[good_inds]
                     # T = T[good_inds]
@@ -882,19 +888,22 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 
     return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
-def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points=100):
+def enforce_3D_monotonicity(index, Xdata, ydata, k=2, 
+                            percentile=0.7, num_points=20,
+                            dist_thr=0.3):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
         return True
         
     direction = point / np.linalg.norm(point)
 
-    scaling = np.linspace(0.1, np.linalg.norm(point), num_points)
+    scaling = np.linspace(0, np.linalg.norm(point), num_points)
     closest_line = []
     for j in range(len(scaling)):
         curr = scaling[j] * direction
         dists = cdist(Xdata, curr[:, None].T).flatten()
-        closest_inds = np.setdiff1d(np.argsort(dists)[:k], index)
+        closest_inds = np.setdiff1d(np.where(dists <= dist_thr)[0], index)
+        # closest_inds = np.setdiff1d(np.argsort(dists)[:k], index)
 
         closest_line.append(closest_inds)
 
@@ -908,7 +917,7 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2, percentile=0.9, num_points
             return False
     
     else:
-        return False
+        return True
 
 # def enforce_3D_monotonicity(index, Xdata, ydata, Tdata, k=2, percentile=0.9, num_points=100, mono_thr=0.5, noise_thr=0.2,
 #                             norm_thr=1.3):

@@ -220,8 +220,8 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     else:
         return currs, Ivals, sigmoid, probs, spikes, results.x
     
-def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=2, 
-                     return_inds=False, NUM_THREADS=24):
+def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=10, 
+                     return_inds=False, NUM_THREADS=24, dist_thr=0.3):
     
     # X_scan = get_stim_amps_newlv(electrical_path, p)
 
@@ -263,7 +263,16 @@ def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=2,
 
     removed_inds = []
     for i in range(len(X_expt_dirty)):
-        neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+        neighbors = np.setdiff1d(np.where(dists[i] <= dist_thr)[0], i)
+        # neighbors = np.argsort(dists[i])[1:n_neighbors+1]
+
+        if len(neighbors) == 0:
+            X_clean.append(X_expt_dirty[i])
+            p_clean.append(probs_dirty[i])
+            T_clean.append(T_dirty[i])
+
+            continue
+
         mean = np.mean(probs_dirty[neighbors])
         stdev = np.std(probs_dirty[neighbors])
 
