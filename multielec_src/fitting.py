@@ -200,7 +200,7 @@ def negLL_hotspot(params, *args):
     ###
 
     # Calculate negative log likelihood
-    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
+    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod)) / len(X)
 
     # Add the regularization penalty term if desired
     if method == 'l1':
@@ -209,6 +209,9 @@ def negLL_hotspot(params, *args):
     elif method == 'l2':
         # penalty term according to l2 regularization
         penalty = reg/2*np.linalg.norm(w.flatten())**2
+    elif method == 'MAP':
+        regmap, mu, cov = reg
+        penalty = regmap * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
     else:
         penalty = 0
 
@@ -284,11 +287,15 @@ def negLL_hotspot_jac(params, *args):
 
         grad[i] = term1 + term2
 
-    grad = grad.ravel()
+    grad = grad.ravel() / len(X)
 
     # penalty term according to l2 regularization
     if method == 'l2':
         grad += reg * params
+
+    elif method == 'MAP':
+        regmap, mu, cov = reg
+        grad += regmap * (np.linalg.inv(cov) @ (params - mu)).flatten()
 
     return grad
 
@@ -348,19 +355,27 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
     good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
     zero_inds = np.where((probs <= spont_limit) | (probs == 1))[0]
 
-    params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
-                                T[good_inds], w_inits,
-                                verbose=verbose)
+    if len(zero_inds) > 0:
+        params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
+                                    T[good_inds], w_inits,
+                                    verbose=verbose)
 
-    probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
-                                                        has_constant='add'),
-                                             params)
-    
-    good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
-    good_inds_tot = np.concatenate([good_inds, good_zero_inds])
-    # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+        
+        probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+                                                            has_constant='add'),
+                                                params)
+        
+        good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
+        good_one_inds = zero_inds[np.where(probs_pred_zero >= thr)[0]]
 
-    return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
+        # probs[good_one_inds] = 1
+        good_inds_tot = np.concatenate([good_inds, good_zero_inds])
+        # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+
+        return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
+
+    else:
+        return X_expt, probs, T
 
     # # fig = plt.figure()
     # # fig.clear()
@@ -837,7 +852,10 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
-                    X, probs, T = mutils.triplet_cleaning(X, probs, T)
+                    clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
+                    dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                                              clean_inds)
+                    probs[dirty_inds] = 0
                     X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
                     
                     # probs = probs[good_inds]
@@ -889,7 +907,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
     return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, 
-                            percentile=0.7, num_points=20,
+                            percentile=0.5, num_points=20,
                             dist_thr=0.3):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
@@ -987,7 +1005,8 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
 
 def fit_surface(X_expt, probs, T, w_inits,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='none', reg=0):
+                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='none', reg=0,
+                        opt_verbose=False):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
     This function is primarily a wrapper for calling get_w() in the framework of 
@@ -1041,14 +1060,20 @@ def fit_surface(X_expt, probs, T, w_inits,
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), 
                                    np.zeros(X_expt.shape[-1])))
-    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, reg_method, 
-                             reg)
+    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, 'none', 
+                             0)
     if verbose:
         print(nll_null)
 
     # Now begin the McFadden pseudo-R2 early stopping loop
-    last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
-                     method=method, jac=jac, reg_method=reg_method, reg=reg)
+    if reg_method == 'MAP':
+        last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
+                        method=method, jac=jac, reg_method=reg_method, 
+                        reg=(reg[0], reg[1][0][0], reg[1][0][1]),
+                        verbose=opt_verbose)
+    else:
+        last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
+                        method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose)
     w_inits[0] = last_opt[0]
     last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
                             # procedure
@@ -1059,11 +1084,20 @@ def fit_surface(X_expt, probs, T, w_inits,
 
     for i in range(1, len(w_inits)):
         # Refit with next number of sites
-        new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
-                        method=method,
-                        jac=jac,
-                        reg_method=reg_method,
-                        reg=reg)
+        if reg_method == 'MAP':
+            new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                            method=method,
+                            jac=jac,
+                            reg_method=reg_method,
+                            reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                            verbose=opt_verbose)
+        else:
+            new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                            method=method,
+                            jac=jac,
+                            reg_method=reg_method,
+                            reg=reg,
+                            verbose=opt_verbose)
         w_inits[i] = new_opt[0]
         new_R2 = new_opt[2]
         BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
@@ -1085,7 +1119,7 @@ def fit_surface(X_expt, probs, T, w_inits,
     return last_opt[0], w_inits, last_R2
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0, slope_bound=10, bias_bound=None):
+          reg_method='none', reg=0, slope_bound=10, bias_bound=None, verbose=False):
     """
     Fitting function for fitting data with a specified number of hotspots
     
@@ -1119,7 +1153,7 @@ def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
 
     # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
-                       args=(X, y, False, reg_method, reg), method=method,
+                       args=(X, y, verbose, reg_method, reg), method=method,
                         jac=jac)
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
