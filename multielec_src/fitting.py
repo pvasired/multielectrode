@@ -643,7 +643,8 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
-                          disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50):
+                          disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
+                          priors_array=None, regmap=None):
 
     """
     Parameters:
@@ -676,6 +677,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     print('Fitting dataset...')
 
     input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array, min_prob,
+                                        priors_array=priors_array, regmap=regmap,
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds)
 
@@ -807,6 +809,7 @@ def sigmoidND_nonlinear(X, w):
     return response
 
 def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
+                        priors_array=None, regmap=None,
                         pass_inds=None, disambiguate=True, min_inds=50,
                         spont_limit=0.2):
     """
@@ -872,7 +875,12 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                 X = np.array([])
                 T = np.array([])
 
-            input_list += [(X, probs, T, w_inits_array[i][j])]
+            if priors_array is None or priors_array[i][j] == 0:
+                input_list += [(X, probs, T, w_inits_array[i][j])]
+            
+            else:
+                input_list += [(X, probs, T, w_inits_array[i][j],
+                                'MAP', (regmap, priors_array[i][j]))]
 
     return input_list
 
@@ -1003,9 +1011,9 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
 
 #     return np.array(Xmono), np.array(ymono), np.array(Tmono)
 
-def fit_surface(X_expt, probs, T, w_inits,
+def fit_surface(X_expt, probs, T, w_inits, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=negLL_hotspot_jac, reg_method='none', reg=0,
+                        method='L-BFGS-B', jac=negLL_hotspot_jac,
                         opt_verbose=False):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
