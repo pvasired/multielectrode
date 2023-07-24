@@ -200,7 +200,7 @@ def negLL_hotspot(params, *args):
     ###
 
     # Calculate negative log likelihood
-    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod)) / len(X)
+    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
 
     # Add the regularization penalty term if desired
     if method == 'l1':
@@ -287,7 +287,7 @@ def negLL_hotspot_jac(params, *args):
 
         grad[i] = term1 + term2
 
-    grad = grad.ravel() / len(X)
+    grad = grad.ravel()
 
     # penalty term according to l2 regularization
     if method == 'l2':
@@ -350,8 +350,15 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     # sigmoid[min(above_limit[i] + 1, len(sigmoid) - 1):] = upper_tail
     return sigmoid
 
-def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
+# Need to check modifying array in this:
+def disambiguate_fitting(X_expt_, probs_, T_, w_inits, priors=None,
+                         verbose=False, thr=0.5, pm=0.3,
                          spont_limit=0.2):
+
+    X_expt = copy.deepcopy(X_expt_)
+    probs = copy.deepcopy(probs_)
+    T = copy.deepcopy(T_)
+
     good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
     zero_inds = np.where((probs <= spont_limit) | (probs == 1))[0]
 
@@ -359,20 +366,42 @@ def disambiguate_fitting(X_expt, probs, T, w_inits, verbose=False, thr=0.5,
         params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
                                     T[good_inds], w_inits,
                                     verbose=verbose)
-
         
-        probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
-                                                            has_constant='add'),
-                                                params)
-        
-        good_zero_inds = zero_inds[np.where(probs_pred_zero < thr)[0]]
-        good_one_inds = zero_inds[np.where(probs_pred_zero >= thr)[0]]
+        if priors is not None:
+            for i in range(len(priors)):
+                if len(priors[i][0].reshape(-1, X_expt.shape[1]+1)) == len(params):
+                    sites_idx = i
+            
+            prior_mean = priors[sites_idx][0].reshape(-1, X_expt.shape[1]+1)
+            
+            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+                                                                has_constant='add'),
+                                                    params)
+            good_zero_inds = zero_inds[np.where(probs_pred_zero < thr - pm)[0]]
+            
+            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds],
+                                                  has_constant='add'),
+                                                  prior_mean)
+            good_one_inds = zero_inds[np.where(probs_pred_zero >= thr + pm)[0]]
+            probs[good_one_inds] = 1
 
-        # probs[good_one_inds] = 1
-        good_inds_tot = np.concatenate([good_inds, good_zero_inds])
-        # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+            good_inds_tot = np.concatenate([good_inds, good_zero_inds, good_one_inds])
 
-        return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
+            return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
+
+        else:
+            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+                                                                has_constant='add'),
+                                                    params)
+            
+            good_zero_inds = zero_inds[np.where(probs_pred_zero < thr - pm)[0]]
+            good_one_inds = zero_inds[np.where(probs_pred_zero >= thr + pm)[0]]
+
+            # probs[good_one_inds] = 1
+            good_inds_tot = np.concatenate([good_inds, good_zero_inds])
+            # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
+
+            return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
 
     else:
         return X_expt, probs, T
@@ -594,6 +623,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 
     # Initialize the optimizer
     optimizer = optax.adamw(step_size)
+    # optimizer = optax.lion(step_size/3)
     # optimizer = optax.sgd(learning_rate=scheduler)
     opt_state = optimizer.init(T)
 
@@ -644,7 +674,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
-                          priors_array=None, regmap=None):
+                          priors_array=None, regmap=None, trial_cap=100, entropy_buffer=0.5,
+                          entropy_samples=5, exploit_factor=0.75):
 
     """
     Parameters:
@@ -710,6 +741,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     transform_mat = []
     probs_vec = []
     num_params = 0
+    entropy_inds = []
+
     for i in range(len(params_curr)):
         for j in range(len(params_curr[i])):
             if ~np.all(params_curr[i][j][:, 0] == -np.inf) and R2s[i][j] >= R2_cutoff:
@@ -718,6 +751,13 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                 jac_dict[i][j] = jax.jacfwd(activation_probs, argnums=1)(X, jnp.array(params_curr[i][j])).reshape(
                                                 (len(X), params_curr[i][j].shape[0]*params_curr[i][j].shape[1]))  # c x l
                 num_params += jac_dict[i][j].shape[1]
+
+                probs_pred = sigmoidND_nonlinear(sm.add_constant(amps[j], 
+                                                    has_constant='add'), 
+                                                    params_curr[i][j])
+                entropy_inds_j = np.where((probs_pred >= 0.5 - entropy_buffer) & (probs_pred <= 0.5 + entropy_buffer))[0]
+                for ind in entropy_inds_j:
+                    entropy_inds.append((j, ind))
 
                 transform = jnp.zeros(len(T_prev))
                 transform = transform.at[j].set(1)
@@ -733,6 +773,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         # else:
         #     return np.ones_like(T_prev, dtype=int) * empty_trials, w_inits_array, np.ones_like(T_prev, dtype=int) * empty_trials
 
+    entropy_inds = np.array(entropy_inds)
     transform_mat = jnp.array(transform_mat, dtype='float32')
     probs_vec = jnp.array(jnp.hstack(probs_vec), dtype='float32')
 
@@ -753,7 +794,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     if t_final is None:
         # T_new_init = jnp.ones_like(jnp.array(T_prev), dtype='float32')
-        random_init = np.random.choice(len(T_prev.flatten()), size=int(budget))
+        random_init = np.random.choice(len(T_prev.flatten()), size=int(budget*exploit_factor))
         T_new_init = jnp.array(np.bincount(random_init, minlength=len(T_prev.flatten())).astype(int).reshape(T_prev.shape), dtype='float32')
 
     else:
@@ -761,7 +802,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     # print(fisher_loss_array(probs_vec, transform_mat, jac_full, jnp.array(T_prev, dtype='float32')))
     losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, 
-                                                    step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget,
+                                                    step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget*exploit_factor,
                                                     verbose=verbose)
 
     if verbose:
@@ -779,17 +820,28 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 
-    if jnp.sum(T_new) < budget:
-        random_extra = np.random.choice(len(T_new.flatten()), size=int(budget - jnp.sum(T_new)),
-                                        p=np.array(jnp.absolute(t_final.flatten()))/np.sum(np.array(jnp.absolute(t_final.flatten()))))
-        T_new_extra = jnp.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype='float32')
-        T_new = T_new + T_new_extra
+    # if jnp.sum(T_new) < budget:
+    #     random_extra = np.random.choice(len(T_new.flatten()), size=int(budget - jnp.sum(T_new)),
+    #                                     p=np.array(jnp.absolute(t_final.flatten()))/np.sum(np.array(jnp.absolute(t_final.flatten()))))
+    #     T_new_extra = jnp.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype='float32')
+    #     T_new = T_new + T_new_extra
+
+    T_new = np.array(T_new)
+    capped_inds = np.where(T_new + T_prev >= trial_cap)
+    T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],
+                                                    0, None)
+
+    if np.sum(T_new) < budget:
+        random_entropy = np.random.choice(len(entropy_inds), 
+                                          size=int((budget - np.sum(T_new))/entropy_samples))
+        for ind in random_entropy:
+            T_new[entropy_inds[ind][0]][entropy_inds[ind][1]] += entropy_samples
 
     if return_probs:
-        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final), probs_curr, params_curr
+        return T_new.astype(int), w_inits_array, np.array(t_final), probs_curr, params_curr
     
     else:
-        return np.array(T_new, dtype=int), w_inits_array, np.array(t_final)
+        return T_new.astype(int), w_inits_array, np.array(t_final)
 
 # Deprecated
 def sigmoidND_nonlinear(X, w):
@@ -808,10 +860,11 @@ def sigmoidND_nonlinear(X, w):
     response = 1 - np.multiply.reduce(1 - response_mat, axis=1)
     return response
 
-def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
+# Need to check modificiation of input arrays in this
+def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        spont_limit=0.2):
+                        spont_limit=0.2, bad_trials=5):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -826,6 +879,10 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
     Returns:
     input_list (list): formatter list ready for multiprocessing
     """
+    all_probs = copy.deepcopy(all_probs_)
+    amps = copy.deepcopy(amps_)
+    trials = copy.deepcopy(trials_)
+
     input_list = []
     for i in range(len(all_probs)):
         for j in range(len(all_probs[i])):
@@ -845,13 +902,18 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                 T = trials[j]
                 X = amps[j]
 
-            good_T_inds = np.where(T > 0)[0]
-
-            probs = probs[good_T_inds]
-            T = T[good_T_inds]
-            X = X[good_T_inds]
-
             if not(disambiguate):
+                # bad_T_inds = np.where(T == 0)[0]
+
+                # probs[bad_T_inds] = 0
+                # T[bad_T_inds] = bad_trials
+
+                good_T_inds = np.where(T > 0)[0]
+
+                probs = probs[good_T_inds]
+                T = T[good_T_inds]
+                X = X[good_T_inds]
+
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds:
@@ -859,8 +921,13 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                     dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
                                               clean_inds)
                     probs[dirty_inds] = 0
-                    X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
-                    
+
+                    if priors_array is None or priors_array[i][j] == 0:
+                        X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+
+                    else:
+                        X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                                                            # priors=priors_array[i][j])
                     # probs = probs[good_inds]
                     # X = X[good_inds]
                     # T = T[good_inds]
@@ -870,6 +937,13 @@ def generate_input_list(all_probs, amps, trials, w_inits_array, min_prob,
                     X = np.array([])
                     T = np.array([])
             
+            else:
+                good_T_inds = np.where(T > 0)[0]
+
+                probs = probs[good_T_inds]
+                T = T[good_T_inds]
+                X = X[good_T_inds]
+                
             if len(probs[probs > min_prob]) == 0:
                 probs = np.array([])
                 X = np.array([])
