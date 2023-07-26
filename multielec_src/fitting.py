@@ -211,7 +211,7 @@ def negLL_hotspot(params, *args):
         penalty = reg/2*np.linalg.norm(w.flatten())**2
     elif method == 'MAP':
         regmap, mu, cov = reg
-        penalty = regmap * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
+        penalty = regmap * len(X) * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
     else:
         penalty = 0
 
@@ -295,7 +295,7 @@ def negLL_hotspot_jac(params, *args):
 
     elif method == 'MAP':
         regmap, mu, cov = reg
-        grad += regmap * (np.linalg.inv(cov) @ (params - mu)).flatten()
+        grad += regmap * len(X) * (np.linalg.inv(cov) @ (params - mu)).flatten()
 
     return grad
 
@@ -351,7 +351,7 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
     return sigmoid
 
 # Need to check modifying array in this:
-def disambiguate_fitting(X_expt_, probs_, T_, w_inits, priors=None,
+def disambiguate_fitting(X_expt_, probs_, T_, w_inits,
                          verbose=False, thr=0.5, pm=0.3,
                          spont_limit=0.2):
 
@@ -366,42 +366,15 @@ def disambiguate_fitting(X_expt_, probs_, T_, w_inits, priors=None,
         params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
                                     T[good_inds], w_inits,
                                     verbose=verbose)
+
+        probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
+                                                            has_constant='add'),
+                                                params)
         
-        if priors is not None:
-            for i in range(len(priors)):
-                if len(priors[i][0].reshape(-1, X_expt.shape[1]+1)) == len(params):
-                    sites_idx = i
-            
-            prior_mean = priors[sites_idx][0].reshape(-1, X_expt.shape[1]+1)
-            
-            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
-                                                                has_constant='add'),
-                                                    params)
-            good_zero_inds = zero_inds[np.where(probs_pred_zero < thr - pm)[0]]
-            
-            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds],
-                                                  has_constant='add'),
-                                                  prior_mean)
-            good_one_inds = zero_inds[np.where(probs_pred_zero >= thr + pm)[0]]
-            probs[good_one_inds] = 1
+        good_zero_inds = zero_inds[np.where(probs_pred_zero < thr - pm)[0]]
+        good_inds_tot = np.concatenate([good_inds, good_zero_inds])
 
-            good_inds_tot = np.concatenate([good_inds, good_zero_inds, good_one_inds])
-
-            return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
-
-        else:
-            probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
-                                                                has_constant='add'),
-                                                    params)
-            
-            good_zero_inds = zero_inds[np.where(probs_pred_zero < thr - pm)[0]]
-            good_one_inds = zero_inds[np.where(probs_pred_zero >= thr + pm)[0]]
-
-            # probs[good_one_inds] = 1
-            good_inds_tot = np.concatenate([good_inds, good_zero_inds])
-            # probs[zero_inds] = (probs_pred_zero >= thr).astype(float)
-
-            return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
+        return X_expt[good_inds_tot], probs[good_inds_tot], T[good_inds_tot]
 
     else:
         return X_expt, probs, T
@@ -674,8 +647,9 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
-                          priors_array=None, regmap=None, trial_cap=100, entropy_buffer=0.5,
-                          entropy_samples=5, exploit_factor=0.75):
+                          priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
+                          entropy_samples=5, exploit_factor=0.75, data_1elec_array=None,
+                          min_clean_inds=20):
 
     """
     Parameters:
@@ -710,7 +684,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array, min_prob,
                                         priors_array=priors_array, regmap=regmap,
                                         pass_inds=pass_inds, disambiguate=disambiguate,
-                                        min_inds=min_inds)
+                                        min_inds=min_inds, data_1elec_array=data_1elec_array,
+                                        min_clean_inds=min_clean_inds)
 
     pool = mp.Pool(processes=24)
     results = pool.starmap_async(fit_surface, input_list)
@@ -837,6 +812,10 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         for ind in random_entropy:
             T_new[entropy_inds[ind][0]][entropy_inds[ind][1]] += entropy_samples
 
+    capped_inds = np.where(T_new + T_prev >= trial_cap)
+    T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],
+                                                    0, None)
+
     if return_probs:
         return T_new.astype(int), w_inits_array, np.array(t_final), probs_curr, params_curr
     
@@ -862,9 +841,9 @@ def sigmoidND_nonlinear(X, w):
 
 # Need to check modificiation of input arrays in this
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
-                        priors_array=None, regmap=None,
+                        priors_array=None, regmap=None, data_1elec_array=None,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        spont_limit=0.2, bad_trials=5):
+                        min_clean_inds=20, spont_limit=0.2):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -903,11 +882,6 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 X = amps[j]
 
             if not(disambiguate):
-                # bad_T_inds = np.where(T == 0)[0]
-
-                # probs[bad_T_inds] = 0
-                # T[bad_T_inds] = bad_trials
-
                 good_T_inds = np.where(T > 0)[0]
 
                 probs = probs[good_T_inds]
@@ -918,19 +892,18 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
 
                 if len(good_inds) >= min_inds:
                     clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
-                    dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
-                                              clean_inds)
-                    probs[dirty_inds] = 0
-
-                    if priors_array is None or priors_array[i][j] == 0:
-                        X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                    above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
+                    if len(above_spont) < min_clean_inds:
+                        probs = np.array([])
+                        X = np.array([])
+                        T = np.array([])
 
                     else:
+                        dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                                                clean_inds)
+                        probs[dirty_inds] = 0
+
                         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
-                                                            # priors=priors_array[i][j])
-                    # probs = probs[good_inds]
-                    # X = X[good_inds]
-                    # T = T[good_inds]
 
                 else:
                     probs = np.array([])
@@ -948,6 +921,14 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 probs = np.array([])
                 X = np.array([])
                 T = np.array([])
+
+            if data_1elec_array is not None and data_1elec_array[i][j] != 0:
+                if len(X) > 0:
+                    X = np.vstack((X, data_1elec_array[i][j][0]))
+                    probs = np.hstack((probs, data_1elec_array[i][j][1]))
+                    T = np.hstack((T, data_1elec_array[i][j][2]))
+                else:
+                    X, probs, T = data_1elec_array[i][j]
 
             if priors_array is None or priors_array[i][j] == 0:
                 input_list += [(X, probs, T, w_inits_array[i][j])]
@@ -989,7 +970,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
     return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, 
-                            percentile=0.5, num_points=20,
+                            percentile=0.9, num_points=20,
                             dist_thr=0.3):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
@@ -1017,73 +998,7 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
             return False
     
     else:
-        return True
-
-# def enforce_3D_monotonicity(index, Xdata, ydata, Tdata, k=2, percentile=0.9, num_points=100, mono_thr=0.5, noise_thr=0.2,
-#                             norm_thr=1.3):
-
-#     point = Xdata[index]
-#     direction = point / np.linalg.norm(point)
-
-#     scaling = np.linspace(0.1, np.linalg.norm(point), num_points)
-#     closest_line = []
-#     for j in range(len(scaling)):
-#         curr = scaling[j] * direction
-#         dists = cdist(Xdata, curr[:, None].T).flatten()
-#         closest_inds = np.setdiff1d(np.argsort(dists)[:k], index)
-
-#         closest_line.append(closest_inds)
-
-#     line_inds = np.unique(np.concatenate(closest_line))
-
-#     if len(line_inds) > 0:
-#         if ydata[index] >= percentile * np.amax(ydata[line_inds]):
-#             return Xdata[index], ydata[index], Tdata[index]
-        
-#         elif np.amax(ydata[line_inds]) >= mono_thr and ydata[index] <= noise_thr:
-#             if np.linalg.norm(point) > norm_thr * np.linalg.norm(Xdata[line_inds[np.argmax(ydata[line_inds])]]):
-#                 return Xdata[index], 1, Tdata[index]
-
-#     elif ydata[index] > noise_thr:
-#         return Xdata[index], ydata[index], Tdata[index]
-
-# def triplet_disambiguation(Xdata, ydata, Tdata, dir_thr=0.1, spont_thr=0.4, noise_thr=0.2, mono_factor=0.6,
-#                             norm_factor=1):
-
-#     ymono = []
-#     Xmono = []
-#     Tmono = []
-#     for index in range(len(Xdata)):
-#         point = Xdata[index]
-#         norm = np.linalg.norm(point)
-#         direction = point / norm
-
-#         other_inds = np.setdiff1d(np.arange(len(Xdata), dtype=int), index)
-#         other_points = Xdata[other_inds]
-#         other_norms = np.linalg.norm(other_points, axis=1)
-#         other_directions = other_points / other_norms[:, None]
-
-#         line_inds = other_inds[np.where((other_norms < norm) & 
-#                                         (np.linalg.norm(other_directions - direction, axis=1) <= dir_thr))[0]]
-
-#         if len(line_inds) > 0:
-#             if ydata[index] >= mono_factor * np.amax(ydata[line_inds]):
-#                 Xmono.append(Xdata[index])
-#                 ymono.append(ydata[index])
-#                 Tmono.append(Tdata[index])
-
-#             elif np.amax(ydata[line_inds]) >= spont_thr and ydata[index] <= noise_thr:
-#                 if norm > norm_factor * np.linalg.norm(Xdata[line_inds[np.argmax(ydata[line_inds])]]):
-#                     Xmono.append(Xdata[index])
-#                     ymono.append(1)
-#                     Tmono.append(Tdata[index])
-
-#             elif np.amax(ydata[line_inds]) <= noise_thr:
-#                 Xmono.append(Xdata[index])
-#                 ymono.append(ydata[index])
-#                 Tmono.append(Tdata[index])
-
-#     return np.array(Xmono), np.array(ymono), np.array(Tmono)
+        return False
 
 def fit_surface(X_expt, probs, T, w_inits, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
