@@ -648,8 +648,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
                           priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
-                          entropy_samples=5, exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=20):
+                          entropy_samples=1, exploit_factor=0.75, data_1elec_array=None,
+                          min_clean_inds=20, zero_prob=0.01, slope_bound=10):
 
     """
     Parameters:
@@ -675,6 +675,9 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
                 for m in ms:
                     w_init = np.array(np.random.normal(size=(m, amps[j].shape[1]+1)))
+                    z = 1 - (1 - zero_prob)**(1/len(w_init))
+                    w_init[:, 0] = np.clip(w_init[:, 0], None, np.log(z/(1-z)))
+                    w_init[:, 1:] = np.clip(w_init[:, 1:], -slope_bound, slope_bound)
                     w_inits.append(w_init)
 
                 w_inits_array[i][j] = w_inits
@@ -890,10 +893,10 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
 
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
-                if len(good_inds) >= min_inds:
+                if len(good_inds) >= min_inds or (data_1elec_array is not None and data_1elec_array[i][j] != 0):
                     clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
                     above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
-                    if len(above_spont) < min_clean_inds:
+                    if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
                         probs = np.array([])
                         X = np.array([])
                         T = np.array([])
@@ -930,7 +933,7 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 else:
                     X, probs, T = data_1elec_array[i][j]
 
-            if priors_array is None or priors_array[i][j] == 0:
+            if priors_array is None or priors_array[i][j] == 0 or regmap == 0:
                 input_list += [(X, probs, T, w_inits_array[i][j])]
             
             else:
@@ -971,7 +974,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, 
                             percentile=0.9, num_points=20,
-                            dist_thr=0.3):
+                            dist_thr=0.1):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
         return True
@@ -1000,7 +1003,7 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
     else:
         return False
 
-def fit_surface(X_expt, probs, T, w_inits, reg_method='none', reg=0,
+def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
                         method='L-BFGS-B', jac=negLL_hotspot_jac,
                         opt_verbose=False):
@@ -1035,7 +1038,7 @@ def fit_surface(X_expt, probs, T, w_inits, reg_method='none', reg=0,
     w_inits (list): The new initial guesses for each number of hotspots for the
                     next possible iteration of fitting
     """
-    X_orig = copy.copy(X_expt)
+    w_inits = copy.deepcopy(w_inits_)
 
     # If the probability never gets large enough, return the degenerate parameters
     # The degenerate parameters are a bias term of -np.inf and all slopes set to 0
@@ -1116,7 +1119,8 @@ def fit_surface(X_expt, probs, T, w_inits, reg_method='none', reg=0,
     return last_opt[0], w_inits, last_R2
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0, slope_bound=10, bias_bound=None, verbose=False):
+          reg_method='none', reg=0, slope_bound=10, bias_bound=None, verbose=False,
+          options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
     """
     Fitting function for fitting data with a specified number of hotspots
     
@@ -1151,7 +1155,7 @@ def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
     # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
                        args=(X, y, verbose, reg_method, reg), method=method,
-                        jac=jac)
+                        jac=jac, options=options)
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
