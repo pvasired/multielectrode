@@ -211,7 +211,7 @@ def negLL_hotspot(params, *args):
         penalty = reg/2*np.linalg.norm(w.flatten())**2
     elif method == 'MAP':
         regmap, mu, cov = reg
-        penalty = regmap * len(X) * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
+        penalty = regmap * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
     else:
         penalty = 0
 
@@ -295,7 +295,7 @@ def negLL_hotspot_jac(params, *args):
 
     elif method == 'MAP':
         regmap, mu, cov = reg
-        grad += regmap * len(X) * (np.linalg.inv(cov) @ (params - mu)).flatten()
+        grad += regmap  * (np.linalg.inv(cov) @ (params - mu)).flatten()
 
     return grad
 
@@ -313,7 +313,55 @@ def fsigmoid(X, w):
     """
     return 1.0 / (1.0 + np.exp(-X @ w))
 
-def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_prob=0.5):
+def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0):
+    """
+    A utility function that returns the set of amplitudes and probabilities
+    that satisfy the monotone requirement.
+
+    TODO: document.
+    """
+    probs = copy.deepcopy(probs_)
+
+    # Zero out the first few amplitudes
+    probs[0:n_amps_blank] = 0
+    mono_inds = np.argwhere(enforce_noisy_monotonicity(probs)).flatten()
+
+    return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds]
+
+def enforce_noisy_monotonicity(probs, st=.5, noise_limit=.8):
+    """
+    Enforces monotonicity in the raw probability data. Finds indices that 
+    violate monotonicity and excludes them in a final set for fitting.
+
+    Code written by Jeff Brown.
+
+    TODO: document.
+    """
+    J_array = []
+    max_value = st
+    trigger = False
+
+    for i in range(len(probs)):
+
+        if probs[i] >= max_value*noise_limit:
+            max_value = probs[i]
+            trigger = True
+            J_array += [1]
+        else:
+
+            if not trigger:
+                J_array += [1]
+            else:
+                J_array += [0]
+
+    J_array = np.array(J_array).astype(np.int16)
+
+    if J_array[0] == 1 and sum(J_array) == 1:
+        J_array[-1] = 1
+
+    return J_array
+
+def disambiguate_sigmoid(sigmoid_, noise_limit = 0.0, thr_prob=0.5):
     """
     Utility for disambiguating 0/1 probability for g-sort output.
     The function converts 0s to 1s if the maximum probability 
@@ -353,7 +401,8 @@ def disambiguate_sigmoid(sigmoid_, spont_limit = 0.3, noise_limit = 0.0, thr_pro
 # Need to check modifying array in this:
 def disambiguate_fitting(X_expt_, probs_, T_, w_inits,
                          verbose=False, thr=0.5, pm=0.3,
-                         spont_limit=0.2):
+                         spont_limit=0.2, reg_method='none',
+                         reg=0):
 
     X_expt = copy.deepcopy(X_expt_)
     probs = copy.deepcopy(probs_)
@@ -364,7 +413,7 @@ def disambiguate_fitting(X_expt_, probs_, T_, w_inits,
 
     if len(zero_inds) > 0:
         params, _, _ = fit_surface(X_expt[good_inds], probs[good_inds], 
-                                    T[good_inds], w_inits,
+                                    T[good_inds], w_inits, reg_method, reg,
                                     verbose=verbose)
 
         probs_pred_zero = sigmoidND_nonlinear(sm.add_constant(X_expt[zero_inds], 
@@ -568,7 +617,8 @@ def fisher_loss_array_jaxopt(x, data):
     # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=None, 
-                          step_size=1, n_steps=100, T_budget=5000, verbose=True):
+                          step_size=1, n_steps=100, T_budget=5000, verbose=True,
+                          trial_cap=25):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -601,14 +651,14 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
     opt_state = optimizer.init(T)
 
     if reg is None:
-        init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+        init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0)))
         reg = init_function / 20000 # 20000 worked, 100000 too large
 
     # Update function for computing the gradient
     @jax.jit
     def update(jac_full, probs_vec, transform_mat, T_prev, T):
         # Adding special l1-regularization term that controls the total trial budget
-        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T)) + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget)
+        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0))) + reg * jnp.absolute(jnp.sum(jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0))) - T_budget)
         grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev)
         
         return grads
@@ -634,9 +684,9 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
         # start_verbose = time.time()
         # If desired, compute the losses and store them
         if verbose:
-            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
-            loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget),
-                            reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget))
+            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0)))
+            loss_tuple = (loss, jnp.sum(jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0))), loss + reg * jnp.absolute(jnp.sum(jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0))) - T_budget),
+                            reg * jnp.absolute(jnp.sum(jnp.minimum(jnp.absolute(T), jnp.clip(trial_cap - T_prev, a_min=0))) - T_budget))
             print(loss_tuple)
             losses += [loss_tuple]
         # print(time.time() - start_verbose)
@@ -649,7 +699,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           disambiguate=True, empty_trials=1, min_prob=0.2, min_inds=50,
                           priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
                           entropy_samples=1, exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=20, zero_prob=0.01, slope_bound=10):
+                          min_clean_inds=20, zero_prob=0.01, slope_bound=10, single_elec=False):
 
     """
     Parameters:
@@ -682,14 +732,15 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
                 w_inits_array[i][j] = w_inits
 
-    print('Fitting dataset...')
+    print('Generating input list...')
 
     input_list = generate_input_list(probs_empirical, amps, T_prev, w_inits_array, min_prob,
                                         priors_array=priors_array, regmap=regmap,
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds, data_1elec_array=data_1elec_array,
-                                        min_clean_inds=min_clean_inds)
+                                        min_clean_inds=min_clean_inds, single_elec=single_elec)
 
+    print('Fitting dataset...')
     pool = mp.Pool(processes=24)
     results = pool.starmap_async(fit_surface, input_list)
     mp_output = results.get()
@@ -781,7 +832,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     # print(fisher_loss_array(probs_vec, transform_mat, jac_full, jnp.array(T_prev, dtype='float32')))
     losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, 
                                                     step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget*exploit_factor,
-                                                    verbose=verbose)
+                                                    verbose=verbose, trial_cap=trial_cap)
 
     if verbose:
         fig, axs = plt.subplots(1, 3, figsize=(15, 5))
@@ -846,7 +897,7 @@ def sigmoidND_nonlinear(X, w):
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None, data_1elec_array=None,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        min_clean_inds=20, spont_limit=0.2):
+                        min_clean_inds=20, spont_limit=0.2, single_elec=False):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -894,19 +945,27 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds or (data_1elec_array is not None and data_1elec_array[i][j] != 0):
-                    clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
-                    above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
-                    if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
-                        probs = np.array([])
-                        X = np.array([])
-                        T = np.array([])
-
+                    if single_elec:
+                        X, probs, T = get_monotone_probs_and_amps(X, probs, T)
+                    
                     else:
-                        dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
-                                                clean_inds)
-                        probs[dirty_inds] = 0
+                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
+                        above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
+                        if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
+                            probs = np.array([])
+                            X = np.array([])
+                            T = np.array([])
 
-                        X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                        else:
+                            dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                                                    clean_inds)
+                            probs[dirty_inds] = 0
+
+                            if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
+                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                                                                reg_method='MAP', reg=(regmap, priors_array[i][j]))
+                            else:
+                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
 
                 else:
                     probs = np.array([])
@@ -973,7 +1032,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
     return np.amax(selec_product_triplet), np.amax(selec_product_1elec)
 
 def enforce_3D_monotonicity(index, Xdata, ydata, k=2, 
-                            percentile=0.9, num_points=20,
+                            percentile=1.0, num_points=20,
                             dist_thr=0.1):
     point = Xdata[index]
     if np.linalg.norm(point) == 0:
@@ -1001,7 +1060,7 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
             return False
     
     else:
-        return False
+        return True
 
 def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
