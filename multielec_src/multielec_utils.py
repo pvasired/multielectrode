@@ -220,8 +220,8 @@ def get1elecCurve(dataset, gsort_path_1elec, estim_1elec, wnoise, p, n, spont_li
     else:
         return currs, Ivals, sigmoid, probs, spikes, results.x
     
-def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=10, 
-                     return_inds=False, NUM_THREADS=24, dist_thr=0.3):
+def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=10, k=2, percentile=1.0,
+                     num_points=20, return_inds=False, NUM_THREADS=24, dist_thr=0.3):
     
     # X_scan = get_stim_amps_newlv(electrical_path, p)
 
@@ -245,7 +245,8 @@ def triplet_cleaning(X_expt_orig, probs_orig, T_orig, n_neighbors=6, n=10,
     # Line enforcement of monotonicity
     pool = mp.Pool(processes=NUM_THREADS)
     results = pool.starmap_async(fitting.enforce_3D_monotonicity, product(np.arange(len(X_expt_orig), dtype=int).tolist(), 
-                                                                  [X_expt_orig], [probs_orig]))
+                                                                  [X_expt_orig], [probs_orig], [k], [percentile],
+                                                                  [num_points], [dist_thr]))
     output = results.get()
     pool.close()
 
