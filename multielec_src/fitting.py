@@ -635,7 +635,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           disambiguate=True, min_prob=0.2, min_inds=50,
                           priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
                           entropy_samples=1, exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=20, zero_prob=0.01, slope_bound=10, single_elec=False):
+                          min_clean_inds=20, zero_prob=0.01, slope_bound=10, NUM_THREADS=24):
 
     """
     Parameters:
@@ -676,10 +676,10 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                         priors_array=priors_array, regmap=regmap,
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds, data_1elec_array=data_1elec_array,
-                                        min_clean_inds=min_clean_inds, single_elec=single_elec)
+                                        min_clean_inds=min_clean_inds)
 
     print('Fitting dataset...')
-    pool = mp.Pool(processes=24)
+    pool = mp.Pool(processes=NUM_THREADS)
     results = pool.starmap_async(fit_surface, input_list)
     mp_output = results.get()
     pool.close()
@@ -691,7 +691,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     cnt = 0
     for i in range(len(probs_empirical)):
-        for j in range(len(probs_empirical[i])):
+        for j in range(len(probs_empirical[i])): 
             params_curr[i][j] = mp_output[cnt][0]
             w_inits_array[i][j] = mp_output[cnt][1]
             R2s[i][j] = mp_output[cnt][2]
@@ -822,8 +822,7 @@ def sigmoidND_nonlinear(X, w):
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None, data_1elec_array=None,
                         pass_inds=None, disambiguate=True, min_inds=50,
-                        min_clean_inds=20, spont_limit=0.2, single_elec=False,
-                        dist_thr=0.15):
+                        min_clean_inds=20, spont_limit=0.2, dist_thr=0.15):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -868,12 +867,11 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
                 if len(good_inds) >= min_inds or (data_1elec_array is not None and data_1elec_array[i][j] != 0):
-                    if single_elec:
+                    if X.shape[1] == 1:
                         X, probs, T = get_monotone_probs_and_amps(X, probs, T)
                     
                     else:
-                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True,
-                                                             dist_thr=dist_thr)
+                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
                         above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
                         if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
                             probs = np.array([])
@@ -881,21 +879,43 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                             T = np.array([])
 
                         else:
-                            dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
-                                                    clean_inds)
-                            probs[dirty_inds] = 0
+                            probs = probs[clean_inds]
+                            X = X[clean_inds]
+                            T = T[clean_inds]
 
-                            if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
-                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
-                                                                reg_method='MAP', reg=(regmap, priors_array[i][j]))
-                            else:
-                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                            fig = plt.figure(10)
+                            fig.clear()
+                            ax = Axes3D(fig, auto_add_to_figure=False)
+                            fig.add_axes(ax)
+                            plt.xlabel(r'$I_1$ ($\mu$A)', fontsize=16)
+                            plt.ylabel(r'$I_2$ ($\mu$A)', fontsize=16)
+                            plt.xlim(-2, 2)
+                            plt.ylim(-2, 2)
+                            ax.set_zlim(-2, 2)
+                            ax.set_zlabel(r'$I_3$ ($\mu$A)', fontsize=16)
+
+                            scat = ax.scatter(X[:, 0], 
+                                            X[:, 1],
+                                            X[:, 2], marker='o', 
+                                            c=probs, s=T, alpha=0.8, vmin=0, vmax=1)
+                            plt.show()
+
+                        # else:
+                        #     dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                        #                             clean_inds)
+                        #     probs[dirty_inds] = 0
+
+                        #     if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
+                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                        #                                         reg_method='MAP', reg=(regmap, priors_array[i][j]))
+                        #     else:
+                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
 
                 else:
                     probs = np.array([])
                     X = np.array([])
                     T = np.array([])
-                
+
             if len(probs[probs > min_prob]) == 0:
                 probs = np.array([])
                 X = np.array([])
@@ -1083,9 +1103,6 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
             print(new_opt, new_R2, BIC, HQC)
 
         # If the pseudo-R2 improvement was too small, break and stop adding sites
-        # if new_R2 - last_R2 <= R2_thresh:
-        #     break
-
         if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
             break
 
