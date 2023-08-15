@@ -691,7 +691,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     cnt = 0
     for i in range(len(probs_empirical)):
-        for j in range(len(probs_empirical[i])): 
+        for j in range(len(probs_empirical[i])):
             params_curr[i][j] = mp_output[cnt][0]
             w_inits_array[i][j] = mp_output[cnt][1]
             R2s[i][j] = mp_output[cnt][2]
@@ -1112,7 +1112,7 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
     return last_opt[0], w_inits, last_R2
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0, slope_bound=10, bias_bound=None, verbose=False,
+          reg_method='none', reg=0, slope_bound=20, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
     """
