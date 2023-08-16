@@ -477,20 +477,6 @@ def activation_probs(x, w):
 
     return p
 
-# @jax.jit
-# def activation_probs_jac(x, w):
-#     prod = jnp.prod((1 / (1 + jnp.exp(jnp.dot(w, jnp.transpose(x))))), 0)
-#     sigmoid = 1 / (1 + jnp.exp(-jnp.dot(w, jnp.transpose(x))))
-#     # maybe clip something here?
-#     # sigmoid = jnp.clip(sigmoid, a_min=1e-5, a_max=1-1e-5)
-#     # prod = jnp.clip(prod, a_min=1e-5, a_max=1-1e-5)
-    
-#     jac_list = []
-#     for i in range(len(sigmoid)):
-#         jac_list.append(x * (sigmoid[i] * prod)[:, None])
-
-#     return jnp.hstack(jac_list)
-
 @jax.jit
 def fisher_loss_array(probs_vec, transform_mat, jac_full, trials):
     """
@@ -518,7 +504,6 @@ def fisher_loss_array(probs_vec, transform_mat, jac_full, trials):
     
     # Avoiding multiplying the matrices out and calculating the trace explicitly
     return jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)))
-    # return jnp.sum(jnp.multiply(jac_full.T, jnp.dot(jnp.linalg.inv(I_w), jac_full.T)))
 
 @jax.jit
 def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
@@ -536,7 +521,8 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
     trials (jnp.DeviceArray): The input trials vector to be optimized
 
     Returns:
-    loss (float): The whole array Fisher information loss
+    loss (float): The whole array Fisher information loss, taking logsumexp() across
+                  cells to minimize the worst case.
     """
     p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
                                                             # overflow errors
@@ -635,7 +621,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           disambiguate=True, min_prob=0.2, min_inds=50,
                           priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
                           entropy_samples=1, exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=20, zero_prob=0.01, slope_bound=10, NUM_THREADS=24):
+                          min_clean_inds=20, zero_prob=0.01, slope_bound=20, NUM_THREADS=24):
 
     """
     Parameters:
@@ -714,15 +700,11 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         for j in range(len(params_curr[i])):
             if ~np.all(params_curr[i][j][:, 0] == -np.inf) and R2s[i][j] >= R2_cutoff:
                 X = jnp.array(sm.add_constant(amps[j], has_constant='add'))
-                # jac_dict[i][j] = activation_probs_jac(X, jnp.array(params_curr[i][j]))
                 jac_dict[i][j] = jax.jacfwd(activation_probs, argnums=1)(X, jnp.array(params_curr[i][j])).reshape(
                                                 (len(X), params_curr[i][j].shape[0]*params_curr[i][j].shape[1]))  # c x l
                 num_params += jac_dict[i][j].shape[1]
 
-                probs_pred = sigmoidND_nonlinear(sm.add_constant(amps[j], 
-                                                    has_constant='add'), 
-                                                    params_curr[i][j])
-                entropy_inds_j = np.where((probs_pred >= 0.5 - entropy_buffer) & (probs_pred <= 0.5 + entropy_buffer))[0]
+                entropy_inds_j = np.where((probs_curr[i][j] >= 0.5 - entropy_buffer) & (probs_curr[i][j] <= 0.5 + entropy_buffer))[0]
                 for ind in entropy_inds_j:
                     entropy_inds.append((j, ind))
 
@@ -801,7 +783,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     else:
         return T_new.astype(int), w_inits_array, np.array(t_final)
 
-# Deprecated
+# Numpy version of activation_probs()
 def sigmoidND_nonlinear(X, w):
     """
     N-dimensional nonlinear sigmoid computed according to multi-
@@ -835,7 +817,7 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                                                             of parameters
                                                             
     Returns:
-    input_list (list): formatter list ready for multiprocessing
+    input_list (list): formatted list ready for multiprocessing
     """
     all_probs = copy.deepcopy(all_probs_)
     amps = copy.deepcopy(amps_)
