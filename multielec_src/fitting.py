@@ -615,6 +615,84 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 
     return np.array(losses), T
 
+def optimize_fisher_array_projected(jac_full, probs_vec, transform_mat, T_prev, T,
+                                    step_size=1, n_steps=100, T_budget=5000, verbose=True):
+    """
+    Fisher optimization loop using optax and AdamW optimizer.
+
+    Parameters:
+    jac_full (jnp.DeviceArray): Full precomputed Jacobian matrix
+    probs_vec (jnp.DeviceArray): Flattened array of all probabilities
+                                 for all non-degenerate (cell, pattern)
+                                 combinations
+    transform_mat (jnp.DeviceArray): transformation matrix to convert trials
+                                     array into correct shape matrix for 
+                                     multiple cells on the same pattern
+    T_prev (jnp.DeviceArray): The previously sampled trials array
+    T (jnp.DeviceArray): The initialization for the to-be-optimized trials
+
+    Returns:
+    losses (np.ndarray): An array of losses per iteration of the optimization routine
+    T (jnp.DeviceArray): The optimized trials matrix 
+    """
+    # Exponential decay of the learning rate.
+    # scheduler = optax.exponential_decay(
+    #     init_value=step_size, 
+    #     transition_steps=1000,
+    #     decay_rate=0.99,
+    #     staircase=False)
+
+    # Initialize the optimizer
+    optimizer = optax.adamw(step_size)
+    # optimizer = optax.lion(step_size/3)
+    # optimizer = optax.sgd(learning_rate=scheduler)
+    opt_state = optimizer.init(T)
+
+    # Update function for computing the gradient
+    @jax.jit
+    def update(jac_full, probs_vec, transform_mat, T_prev, T):
+        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+        grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev)
+        return grads
+    
+    losses = []
+    for step in range(n_steps):
+        if verbose:
+            print(step)
+
+        # Update the optimizer
+        # start_grad = time.time()
+        grads = update(jac_full, probs_vec, transform_mat, T_prev, T)
+        # print(time.time() - start_grad)
+
+        # start_update = time.time()
+        updates, opt_state = optimizer.update(grads, opt_state, params=T)
+        # print(time.time() - start_update)
+
+        # start_apply = time.time()
+        T = optax.apply_updates(T, updates)
+        # print(time.time() - start_apply)
+
+        # Project the trials onto the budget
+        mu = jnp.flip(jnp.sort(jnp.absolute(T).flatten()))
+        for j in range(len(mu)):
+            if mu[j] - (jnp.sum(mu[:j+1]) - T_budget) / (j + 1) < 0:
+                break
+
+        theta = (jnp.sum(mu[:j]) - T_budget) / j
+        T = jnp.maximum(jnp.absolute(T) - theta, 0)
+
+        # start_verbose = time.time()
+        # If desired, compute the losses and store them
+        if verbose:
+            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+            loss_tuple = (loss, jnp.sum(jnp.absolute(T)))
+            print(loss_tuple)
+            losses += [loss_tuple]
+        # print(time.time() - start_verbose)
+
+    return np.array(losses), T
+
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
@@ -838,13 +916,12 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                     X = amps[j]
 
             else:
-                probs_orig = all_probs[i][j]
-                T_orig = trials[j]
-                X_orig = amps[j]
+                probs = all_probs[i][j]
+                T = trials[j]
+                X = amps[j]
 
-            good_T_inds = np.where(T_orig > 0)[0]
-            probs, X, T = copy.deepcopy(probs_orig[good_T_inds]), copy.deepcopy(X_orig[good_T_inds]), copy.deepcopy(T_orig[good_T_inds])
-
+            good_T_inds = np.where(T > 0)[0]
+            probs, X, T = copy.deepcopy(probs[good_T_inds]), copy.deepcopy(X[good_T_inds]), copy.deepcopy(T[good_T_inds])
             if not(disambiguate):
                 good_inds = np.where((probs > spont_limit) & (probs != 1))[0]
 
@@ -853,45 +930,28 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         X, probs, T = get_monotone_probs_and_amps(X, probs, T)
                     
                     else:
-                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True)
+                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True, dist_thr=dist_thr)
                         above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
                         if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
                             probs = np.array([])
                             X = np.array([])
                             T = np.array([])
 
-                        else:
-                            probs = probs[clean_inds]
-                            X = X[clean_inds]
-                            T = T[clean_inds]
-
-                            fig = plt.figure(10)
-                            fig.clear()
-                            ax = Axes3D(fig, auto_add_to_figure=False)
-                            fig.add_axes(ax)
-                            plt.xlabel(r'$I_1$ ($\mu$A)', fontsize=16)
-                            plt.ylabel(r'$I_2$ ($\mu$A)', fontsize=16)
-                            plt.xlim(-2, 2)
-                            plt.ylim(-2, 2)
-                            ax.set_zlim(-2, 2)
-                            ax.set_zlabel(r'$I_3$ ($\mu$A)', fontsize=16)
-
-                            scat = ax.scatter(X[:, 0], 
-                                            X[:, 1],
-                                            X[:, 2], marker='o', 
-                                            c=probs, s=T, alpha=0.8, vmin=0, vmax=1)
-                            plt.show()
-
                         # else:
-                        #     dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
-                        #                             clean_inds)
-                        #     probs[dirty_inds] = 0
+                        #     probs = probs[clean_inds]
+                        #     X = X[clean_inds]
+                        #     T = T[clean_inds]
 
-                        #     if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
-                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
-                        #                                         reg_method='MAP', reg=(regmap, priors_array[i][j]))
-                        #     else:
-                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                        else:
+                            dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                                                    clean_inds)
+                            probs[dirty_inds] = 0
+
+                            if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
+                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                                                                reg_method='MAP', reg=(regmap, priors_array[i][j]))
+                            else:
+                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
 
                 else:
                     probs = np.array([])
