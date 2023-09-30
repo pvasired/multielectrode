@@ -2,6 +2,7 @@
 
 import numpy as np
 from sklearn.preprocessing import PolynomialFeatures
+import sklearn.model_selection as model_selection
 import statsmodels.api as sm
 from scipy.spatial.distance import cdist
 from scipy.optimize import minimize
@@ -1152,6 +1153,137 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
         last_R2 = new_R2
 
     return last_opt[0], w_inits, last_R2
+
+def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
+                        R2_thresh=0.1, zero_prob=0.01, verbose=False,
+                        method='L-BFGS-B', jac=negLL_hotspot_jac,
+                        opt_verbose=False, random_state=None):
+    """
+    Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
+    This function is primarily a wrapper for calling get_w() in the framework of 
+    early stopping using the McFadden pseudo-R2 metric.
+
+    Parameters:
+    X_expt (N x d np.ndarray): Input amplitudes
+    probs (N x 1 np.ndarray): Probabilities corresponding to the amplitudes
+    T (N x 1 np.ndarray): Trials at each amplitude
+    w_inits (list): List of initial guessses for each number of hotspots. Each element
+                    in the list is a (m x (d + 1)) np.ndarray with m the number of 
+                    hotspots. This list should be generated externally.
+    R2_thresh (float): Threshold used for determining when to stop adding hotspots
+    zero_prob (float): Value for what the probability should be forced to be below
+                       at an amplitude of 0-vector
+    verbose (bool): Increases verbosity
+    method (string): Method for optimization according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Jacobian function if manually calculated
+    reg_method (string): Regularization method. 'l2' is supported
+    reg (float): Regularization parameter value
+    min_prob (float): Minimum probability that must be exceeded in the dataset for
+                      fitting to occur and to not return the null parameters
+
+    Returns:
+    last_opt[0] (m x (d + 1) np.ndarray): The optimized set of parameters for the 
+                                          optimized number of hotspots m using
+                                          McFadden Pseudo-R2 and early stopping
+    w_inits (list): The new initial guesses for each number of hotspots for the
+                    next possible iteration of fitting
+    """
+    w_inits = copy.deepcopy(w_inits_)
+
+    # If the probability never gets large enough, return the degenerate parameters
+    # The degenerate parameters are a bias term of -np.inf and all slopes set to 0
+    # These parameters cause probs_pred to be an array of all 0s
+    if len(probs) == 0:
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+
+        return deg_opt, w_inits, -1
+    
+    # If a large enough probability was detected, begin fitting
+
+    # Convert the data to binary classification data
+    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
+    
+    # Stratified K Fold Cross Validation to choose number of sites
+    skf = model_selection.StratifiedKFold(n_splits=len(w_inits), shuffle=True, random_state=random_state)
+    test_R2s = np.zeros(len(w_inits))
+    for i, (train_index, test_index) in enumerate(skf.split(X_bin, y_bin)):
+        X_train, X_test = X_bin[train_index], X_bin[test_index]
+        y_train, y_test = y_bin[train_index], y_bin[test_index]
+
+        # Compute the negative log likelihood of the null model which only
+        # includes an intercept
+        ybar_train = np.mean(y_train)
+        beta_null_train = np.log(ybar_train / (1 - ybar_train))
+        null_weights_train = np.concatenate((np.array([beta_null_train]), 
+                                             np.zeros(X_expt.shape[-1])))
+        nll_null_train = negLL_hotspot(null_weights_train, X_train, y_train, False, 'none', 0)
+
+        if reg_method == 'MAP':
+            train_params, _, _ = get_w(w_inits[i], X_train, y_train, nll_null_train, zero_prob=zero_prob,
+                                        method=method, jac=jac, reg_method=reg_method,
+                                        reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                                        verbose=opt_verbose)
+        else:
+            train_params, _, _ = get_w(w_inits[i], X_train, y_train, nll_null_train, 
+                                                        zero_prob=zero_prob, method=method, jac=jac, 
+                                                        reg_method=reg_method, reg=reg, 
+                                                        verbose=opt_verbose)
+        test_fun = negLL_hotspot(train_params, X_test, y_test, opt_verbose, reg_method, reg)
+
+        # Compute the negative log likelihood of the null model which only
+        # includes an intercept
+        ybar_test = np.mean(y_test)
+        beta_null_test = np.log(ybar_test / (1 - ybar_test))
+        null_weights_test = np.concatenate((np.array([beta_null_test]), 
+                                             np.zeros(X_expt.shape[-1])))
+        nll_null_test = negLL_hotspot(null_weights_test, X_test, y_test, False, 'none', 0)
+
+        test_R2 = 1 - test_fun / nll_null_test
+        test_R2s[i] = test_R2
+
+    breakFlag = 0
+    for i in range(1, len(test_R2s)):
+        if test_R2s[i-1] > 0 and (test_R2s[i] - test_R2s[i-1]) / test_R2s[i-1] <= R2_thresh:
+            breakFlag = 1
+            break
+    
+    if breakFlag:
+        ind = i - 1
+        w_init = w_inits[ind]
+    else:
+        ind = len(w_inits) - 1
+        w_init = w_inits[ind]
+
+    # Compute the negative log likelihood of the null model which only
+    # includes an intercept
+    ybar = np.mean(y_bin)
+    beta_null = np.log(ybar / (1 - ybar))
+    null_weights = np.concatenate((np.array([beta_null]), 
+                                np.zeros(X_expt.shape[-1])))
+    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, 'none', 0)
+
+    if verbose:
+        print(nll_null)
+
+    if reg_method == 'MAP':
+        opt = get_w(w_init, X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                        method=method,
+                        jac=jac,
+                        reg_method=reg_method,
+                        reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                        verbose=opt_verbose)
+    else:
+        opt = get_w(w_init, X_bin, y_bin, nll_null, zero_prob=zero_prob,
+                        method=method,
+                        jac=jac,
+                        reg_method=reg_method,
+                        reg=reg,
+                        verbose=opt_verbose)
+
+    w_inits[ind] = opt[0]
+    return opt[0], w_inits, opt[2]
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
           reg_method='none', reg=0, slope_bound=20, bias_bound=None, verbose=False,
