@@ -1045,7 +1045,7 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
 def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
                         method='L-BFGS-B', jac=negLL_hotspot_jac,
-                        opt_verbose=False):
+                        opt_verbose=False, slope_bound=20):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
     This function is primarily a wrapper for calling get_w() in the framework of 
@@ -1109,10 +1109,11 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
         last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
                         method=method, jac=jac, reg_method=reg_method, 
                         reg=(reg[0], reg[1][0][0], reg[1][0][1]),
-                        verbose=opt_verbose)
+                        verbose=opt_verbose, slope_bound=slope_bound)
     else:
         last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
-                        method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose)
+                        method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
+                        slope_bound=slope_bound)
     w_inits[0] = last_opt[0]
     last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
                             # procedure
@@ -1129,14 +1130,16 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                             jac=jac,
                             reg_method=reg_method,
                             reg=(reg[0], reg[1][i][0], reg[1][i][1]),
-                            verbose=opt_verbose)
+                            verbose=opt_verbose,
+                            slope_bound=slope_bound)
         else:
             new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
                             method=method,
                             jac=jac,
                             reg_method=reg_method,
                             reg=reg,
-                            verbose=opt_verbose)
+                            verbose=opt_verbose,
+                            slope_bound=slope_bound)
         w_inits[i] = new_opt[0]
         new_R2 = new_opt[2]
         BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
@@ -1152,12 +1155,12 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
         last_opt = new_opt
         last_R2 = new_R2
 
-    return last_opt[0], w_inits, last_R2
+    return last_opt, w_inits
 
 def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
                         method='L-BFGS-B', jac=negLL_hotspot_jac,
-                        opt_verbose=False, random_state=None):
+                        opt_verbose=False, random_state=None, slope_bound=20):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
     This function is primarily a wrapper for calling get_w() in the framework of 
@@ -1224,12 +1227,13 @@ def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
             train_params, _, _ = get_w(w_inits[i], X_train, y_train, nll_null_train, zero_prob=zero_prob,
                                         method=method, jac=jac, reg_method=reg_method,
                                         reg=(reg[0], reg[1][i][0], reg[1][i][1]),
-                                        verbose=opt_verbose)
+                                        verbose=opt_verbose, slope_bound=slope_bound)
         else:
             train_params, _, _ = get_w(w_inits[i], X_train, y_train, nll_null_train, 
                                                         zero_prob=zero_prob, method=method, jac=jac, 
                                                         reg_method=reg_method, reg=reg, 
-                                                        verbose=opt_verbose)
+                                                        verbose=opt_verbose,
+                                                        slope_bound=slope_bound)
         test_fun = negLL_hotspot(train_params, X_test, y_test, opt_verbose, reg_method, reg)
 
         # Compute the negative log likelihood of the null model which only
@@ -1273,17 +1277,19 @@ def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         jac=jac,
                         reg_method=reg_method,
                         reg=(reg[0], reg[1][i][0], reg[1][i][1]),
-                        verbose=opt_verbose)
+                        verbose=opt_verbose,
+                        slope_bound=slope_bound)
     else:
         opt = get_w(w_init, X_bin, y_bin, nll_null, zero_prob=zero_prob,
                         method=method,
                         jac=jac,
                         reg_method=reg_method,
                         reg=reg,
-                        verbose=opt_verbose)
+                        verbose=opt_verbose,
+                        slope_bound=slope_bound)
 
     w_inits[ind] = opt[0]
-    return opt[0], w_inits, opt[2]
+    return opt, w_inits
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
           reg_method='none', reg=0, slope_bound=20, bias_bound=None, verbose=False,
