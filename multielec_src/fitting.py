@@ -317,7 +317,7 @@ def fsigmoid(X, w):
     """
     return 1.0 / (1.0 + np.exp(-X @ w))
 
-def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0):
+def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0, st=0.5):
     """
     A utility function that returns the set of amplitudes and probabilities
     that satisfy the monotone requirement.
@@ -328,7 +328,7 @@ def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0):
 
     # Zero out the first few amplitudes
     probs[0:n_amps_blank] = 0
-    mono_inds = np.argwhere(enforce_noisy_monotonicity(probs)).flatten()
+    mono_inds = np.argwhere(enforce_noisy_monotonicity(probs, st=st)).flatten()
 
     return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds]
 
