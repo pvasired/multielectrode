@@ -258,10 +258,10 @@ def optimize_fisher_array_projected(jac_full, probs_vec, transform_mat, T_prev, 
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1, 2],
                           verbose=True, pass_inds=None, R2_cutoff=0, return_probs=False,
-                          disambiguate=True, min_prob=0.2, min_inds=50,
-                          priors_array=None, regmap=None, trial_cap=25, entropy_buffer=0.5,
-                          entropy_samples=1, exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=20, zero_prob=0.01, slope_bound=20, NUM_THREADS=24):
+                          disambiguate=True, min_prob=0.2, min_inds=0,
+                          priors_array=None, regmap=None, trial_cap=25,
+                          exploit_factor=0.75, data_1elec_array=None,
+                          min_clean_inds=0, zero_prob=0.01, slope_bound=20, NUM_THREADS=24):
 
     """
     Parameters:
@@ -318,9 +318,9 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     cnt = 0
     for i in range(len(probs_empirical)):
         for j in range(len(probs_empirical[i])):
-            params_curr[i][j] = mp_output[cnt][0]
+            params_curr[i][j] = mp_output[cnt][0][0]
             w_inits_array[i][j] = mp_output[cnt][1]
-            R2s[i][j] = mp_output[cnt][2]
+            R2s[i][j] = mp_output[cnt][0][2]
             
             probs_curr[i][j] = fitting.sigmoidND_nonlinear(
                                     sm.add_constant(amps[j], has_constant='add'), 
@@ -334,7 +334,6 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     transform_mat = []
     probs_vec = []
     num_params = 0
-    entropy_inds = []
 
     for i in range(len(params_curr)):
         for j in range(len(params_curr[i])):
@@ -343,10 +342,6 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                 jac_dict[i][j] = jax.jacfwd(activation_probs, argnums=1)(X, jnp.array(params_curr[i][j])).reshape(
                                                 (len(X), params_curr[i][j].shape[0]*params_curr[i][j].shape[1]))  # c x l
                 num_params += jac_dict[i][j].shape[1]
-
-                entropy_inds_j = np.where((probs_curr[i][j] >= 0.5 - entropy_buffer) & (probs_curr[i][j] <= 0.5 + entropy_buffer))[0]
-                for ind in entropy_inds_j:
-                    entropy_inds.append((j, ind))
 
                 transform = jnp.zeros(len(T_prev))
                 transform = transform.at[j].set(1)
@@ -357,7 +352,6 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     if len(probs_vec) == 0:
         raise ValueError("No valid probabilities found.")
     
-    entropy_inds = np.array(entropy_inds)
     transform_mat = jnp.array(transform_mat, dtype='float32')
     probs_vec = jnp.array(jnp.hstack(probs_vec), dtype='float32')
 
@@ -408,10 +402,10 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                                     0, None)
 
     if np.sum(T_new) < budget:
-        random_entropy = np.random.choice(len(entropy_inds), 
-                                          size=int((budget - np.sum(T_new))/entropy_samples))
-        for ind in random_entropy:
-            T_new[entropy_inds[ind][0]][entropy_inds[ind][1]] += entropy_samples
+        random_extra = np.random.choice(len(T_new.flatten()), size=int(budget - np.sum(T_new)), replace=True)
+        T_new_uniform = np.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype=float)
+
+        T_new = T_new + T_new_uniform
 
     capped_inds = np.where(T_new + T_prev >= trial_cap)
     T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],

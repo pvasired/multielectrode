@@ -474,8 +474,8 @@ def sigmoidND_nonlinear(X, w):
 # Need to check modificiation of input arrays in this
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None, data_1elec_array=None,
-                        pass_inds=None, disambiguate=True, min_inds=50,
-                        min_clean_inds=20, spont_limit=0.2, dist_thr=0.15):
+                        pass_inds=None, disambiguate=True, min_inds=0,
+                        min_clean_inds=0, spont_limit=0.2, dist_thr=0.15):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -530,21 +530,21 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                             X = np.array([])
                             T = np.array([])
 
-                        # else:
-                        #     probs = probs[clean_inds]
-                        #     X = X[clean_inds]
-                        #     T = T[clean_inds]
-
                         else:
-                            dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
-                                                    clean_inds)
-                            probs[dirty_inds] = 0
+                            probs = probs[clean_inds]
+                            X = X[clean_inds]
+                            T = T[clean_inds]
 
-                            if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
-                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
-                                                                reg_method='MAP', reg=(regmap, priors_array[i][j]))
-                            else:
-                                X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
+                        # else:
+                        #     dirty_inds = np.setdiff1d(np.arange(len(X), dtype=int),
+                        #                             clean_inds)
+                        #     probs[dirty_inds] = 0
+
+                        #     if priors_array is not None and priors_array[i][j] != 0 and regmap != 0:
+                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j],
+                        #                                         reg_method='MAP', reg=(regmap, priors_array[i][j]))
+                        #     else:
+                        #         X, probs, T = disambiguate_fitting(X, probs, T, w_inits_array[i][j])
 
                 else:
                     probs = np.array([])
@@ -678,7 +678,7 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
 
-        return deg_opt, w_inits, -1
+        return (deg_opt, 0, -1), w_inits
     
     # If a large enough probability was detected, begin fitting
 
@@ -793,7 +793,7 @@ def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
 
-        return deg_opt, w_inits, -1
+        return (deg_opt, 0, -1), w_inits
     
     # If a large enough probability was detected, begin fitting
 
