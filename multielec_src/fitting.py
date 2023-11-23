@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import multielec_src.multielec_utils as mutils
 
-def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1, 
-                              interaction=True):
+def convertToBinaryClassifier(probs_, num_trials_, amplitudes_, degree=1, 
+                              interaction=True, min_trials=5, vote_by_majority=True):
     """
     Converts input g-sort data of probabilities, trials, and 
     amplitudes. Includes a functionality for converting to data to a
@@ -46,20 +46,30 @@ def convertToBinaryClassifier(probs, num_trials, amplitudes, degree=1,
     y (np.ndarray): The binary classifier outputs consisting of 0s and
                     1s, with the same length as X.
     """
-    
+    probs = copy.deepcopy(probs_)
+    num_trials = copy.deepcopy(num_trials_)
+    amplitudes = copy.deepcopy(amplitudes_)
+
     y = []
     X = []
     num_trials = num_trials.astype(int) # convert to integer
     for j in range(len(amplitudes)):
-        # Calculate the number of 1s and 0s for each probability
-        num1s = int(np.around(probs[j] * num_trials[j], 0))
-        num0s = num_trials[j] - num1s
+        if num_trials[j] >= min_trials:
+            if vote_by_majority:
+                num_trials[j] = 1
+                probs[j] = np.around(probs[j], 0)
 
-        # Append all the amplitudes for this probability
-        X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
+            # Calculate the number of 1s and 0s for each probability
+            num1s = int(np.around(probs[j] * num_trials[j], 0))
+            num0s = num_trials[j] - num1s
 
-        # Append the 0s and 1s for this probability
-        y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
+            # Append all the amplitudes for this probability
+            X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
+
+            # Append the 0s and 1s for this probability
+            y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
+
+    assert len(X) > 0, "No data points were found with enough trials"
     
     # If desired, perform a polynomial transformation with cross terms
     if interaction == True:
@@ -177,30 +187,30 @@ def negLL_hotspot(params, *args):
     w = params.reshape(-1, X.shape[-1]).astype(float)
 
     # Negative log-likelihood calculation for hotspot activation
-    prod = np.ones(len(X))
-    for i in range(len(w)):
-        prod *= (1 + np.exp(X @ w[i].T))
-    prod -= 1
+    # prod = np.ones(len(X))
+    # for i in range(len(w)):
+    #     prod *= (1 + np.exp(X @ w[i].T))
+    # prod -= 1
 
-    prod[prod < 1e-10] = 1e-10  # prevent divide by 0 errors
+    # prod[prod < 1e-10] = 1e-10  # prevent divide by 0 errors
 
     ### Deprecated calculation (gives same results but slower) ###
     # yPred2 = 1 / (1 + np.exp(-np.log(prod)))
 
     # Get predicted probability of spike using current parameters
-    # response_mat = 1 / (1 + np.exp(-X @ w.T))
-    # yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
+    response_mat = 1 / (1 + np.exp(-X @ w.T))
+    yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
 
     # print(np.sum(np.absolute(yPred - yPred2)))
-    # yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
-    # yPred[yPred == 0] = 0.000001
+    yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
+    yPred[yPred == 0] = 0.000001
     
     # negative log likelihood for logistic
-    # NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
+    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
     ###
 
     # Calculate negative log likelihood
-    NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
+    # NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
 
     # Add the regularization penalty term if desired
     if method == 'l1':
@@ -217,9 +227,9 @@ def negLL_hotspot(params, *args):
         penalty = 0
 
     if verbose:
-        print(NLL2, penalty)
+        print(NLL, penalty)
         
-    return(NLL2 + penalty)
+    return(NLL + penalty)
 
 def all_combos(iterable):
     """
@@ -475,7 +485,8 @@ def sigmoidND_nonlinear(X, w):
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None, data_1elec_array=None,
                         pass_inds=None, disambiguate=True, min_inds=0,
-                        min_clean_inds=0, spont_limit=0.2, dist_thr=0.15):
+                        min_clean_inds=0, spont_limit=0.2, dist_thr=0.15,
+                        bootstrapping=None, X_all=None, percentile=0.9):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -523,7 +534,8 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         X, probs, T = get_monotone_probs_and_amps(X, probs, T)
                     
                     else:
-                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True, dist_thr=dist_thr)
+                        clean_inds = mutils.triplet_cleaning(X, probs, T, return_inds=True, dist_thr=dist_thr,
+                                                             percentile=percentile)
                         above_spont = np.where(probs[clean_inds] >= spont_limit)[0]
                         if len(above_spont) < min_clean_inds and (data_1elec_array is None or data_1elec_array[i][j] == 0):
                             probs = np.array([])
@@ -565,10 +577,10 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                     X, probs, T = data_1elec_array[i][j]
 
             if priors_array is None or priors_array[i][j] == 0 or regmap == 0:
-                input_list += [(X, probs, T, w_inits_array[i][j])]
+                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j])]
             
             else:
-                input_list += [(X, probs, T, w_inits_array[i][j],
+                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
                                 'MAP', (regmap, priors_array[i][j]))]
 
     return input_list
@@ -634,9 +646,10 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
     else:
         return False
 
-def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
-                        R2_thresh=0.1, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=negLL_hotspot_jac,
+def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
+                        reg_method='none', reg=0,
+                        R2_thresh=0.05, zero_prob=0.01, verbose=False,
+                        method='L-BFGS-B', jac=None,
                         opt_verbose=False, slope_bound=20):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
@@ -742,16 +755,73 @@ def fit_surface(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
 
         # If the pseudo-R2 improvement was too small, break and stop adding sites
         if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
+            final_ind = i - 1
             break
 
         last_opt = new_opt
         last_R2 = new_R2
+        final_ind = i
+
+    # If bootstrapping is desired, perform bootstrapping
+
+    if bootstrapping is not None:
+        assert type(bootstrapping) == int, "bootstrapping must be an integer"
+        assert X_all is not None, "X_all must be provided if bootstrapping is desired"
+        y_bootstrapped = np.zeros((bootstrapping, len(X_all)))
+        for i in range(bootstrapping):
+            samples = np.random.choice(np.arange(len(X_bin), dtype=int),
+                                       size=len(X_bin), replace=True)
+            Xdata, ydata = X_bin[samples], y_bin[samples]
+            if reg_method == 'MAP':
+                opt = get_w(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
+                                method=method,
+                                jac=jac,
+                                reg_method=reg_method,
+                                reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
+                                verbose=opt_verbose,
+                                slope_bound=slope_bound)
+            else:
+                opt = get_w(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
+                                method=method,
+                                jac=jac,
+                                reg_method=reg_method,
+                                reg=reg,
+                                verbose=opt_verbose,
+                                slope_bound=slope_bound)
+            
+            params = opt[0]
+            probs_pred = sigmoidND_nonlinear(sm.add_constant(X_all, has_constant='add'), 
+                                             params)
+            y_bootstrapped[i] = probs_pred
+        
+        y_bootstrapped_avg = np.mean(y_bootstrapped, axis=0)
+
+        ybar = np.mean(y_bootstrapped_avg)
+        beta_null = np.log(ybar / (1 - ybar))
+        null_weights = np.concatenate((np.array([beta_null]), 
+                                    np.zeros(X_all.shape[-1])))
+        nll_null = negLL_hotspot(null_weights, sm.add_constant(X_all, has_constant='add'),
+                                 y_bootstrapped_avg, False, 'none', 0)
+
+        if reg_method == 'MAP':
+            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
+                        y_bootstrapped_avg, nll_null, zero_prob=zero_prob,
+                        method=method, jac=jac, reg_method=reg_method, 
+                        reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
+                        verbose=opt_verbose, slope_bound=slope_bound)
+        else:
+            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
+                        y_bootstrapped_avg, nll_null, zero_prob=zero_prob,
+                        method=method, jac=jac, reg_method=reg_method, reg=reg,
+                        verbose=opt_verbose, slope_bound=slope_bound)
+
+        w_inits[final_ind] = last_opt[0]
 
     return last_opt, w_inits
 
 def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
                         R2_thresh=0.1, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=negLL_hotspot_jac,
+                        method='L-BFGS-B', jac=None,
                         opt_verbose=False, random_state=None, slope_bound=20):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.

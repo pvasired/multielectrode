@@ -261,7 +261,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           disambiguate=True, min_prob=0.2, min_inds=0,
                           priors_array=None, regmap=None, trial_cap=25,
                           exploit_factor=0.75, data_1elec_array=None,
-                          min_clean_inds=0, zero_prob=0.01, slope_bound=20, NUM_THREADS=24):
+                          min_clean_inds=0, zero_prob=0.01, slope_bound=20, NUM_THREADS=24,
+                          bootstrapping=None, X_all=None):
 
     """
     Parameters:
@@ -302,8 +303,8 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                         priors_array=priors_array, regmap=regmap,
                                         pass_inds=pass_inds, disambiguate=disambiguate,
                                         min_inds=min_inds, data_1elec_array=data_1elec_array,
-                                        min_clean_inds=min_clean_inds)
-
+                                        min_clean_inds=min_clean_inds, bootstrapping=bootstrapping,
+                                        X_all=X_all)
     print('Fitting dataset...')
     pool = mp.Pool(processes=NUM_THREADS)
     results = pool.starmap_async(fitting.fit_surface, input_list)
