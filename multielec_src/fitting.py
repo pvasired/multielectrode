@@ -486,7 +486,9 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         priors_array=None, regmap=None, data_1elec_array=None,
                         pass_inds=None, disambiguate=True, min_inds=0,
                         min_clean_inds=0, spont_limit=0.2, dist_thr=0.15,
-                        bootstrapping=None, X_all=None, percentile=0.9):
+                        bootstrapping=None, X_all=None, percentile=0.9,
+                        slope_bound=20, reg_method='none', reg=None, zero_prob=0.01,
+                        R2_thresh=0.05, opt_verbose=False):
     """
     Generate input list for multiprocessing fitting of sigmoids
     to an entire array.
@@ -577,11 +579,13 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                     X, probs, T = data_1elec_array[i][j]
 
             if priors_array is None or priors_array[i][j] == 0 or regmap == 0:
-                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j])]
+                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
+                                reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
             
             else:
                 input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
-                                'MAP', (regmap, priors_array[i][j]))]
+                                'MAP', (regmap, priors_array[i][j]),
+                                slope_bound, zero_prob, R2_thresh, opt_verbose)]
 
     return input_list
 
@@ -647,10 +651,9 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
         return False
 
 def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
-                        reg_method='none', reg=0,
-                        R2_thresh=0.05, zero_prob=0.01, verbose=False,
-                        method='L-BFGS-B', jac=None,
-                        opt_verbose=False, slope_bound=20):
+                        reg_method='none', reg=0, slope_bound=20, zero_prob=0.01,
+                        R2_thresh=0.05, opt_verbose=False, verbose=False,
+                        method='L-BFGS-B', jac=None):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
     This function is primarily a wrapper for calling get_w() in the framework of 
@@ -684,41 +687,44 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
     """
     w_inits = copy.deepcopy(w_inits_)
 
+    # Convert the data to binary classification data
+    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
+
     # If the probability never gets large enough, return the degenerate parameters
     # The degenerate parameters are a bias term of -np.inf and all slopes set to 0
     # These parameters cause probs_pred to be an array of all 0s
-    if len(probs) == 0:
-        deg_opt = np.zeros_like(w_inits[-1])
-        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
-
-        return (deg_opt, 0, -1), w_inits
     
     # If a large enough probability was detected, begin fitting
-
-    # Convert the data to binary classification data
-    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
 
     # Compute the negative log likelihood of the null model which only
     # includes an intercept
     ybar = np.mean(y_bin)
+    if len(probs) == 0 or ybar == 0:
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+
+        return (deg_opt, 0, -1), w_inits
+
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), 
                                    np.zeros(X_expt.shape[-1])))
-    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, 'none', 
-                             0)
+    nll_null = negLL_hotspot(null_weights, X_bin, y_bin, False, reg_method, reg)
     if verbose:
         print(nll_null)
 
+    X_orig, y_orig = convertToBinaryClassifier(probs, T, X_expt, min_trials=1)
+
     # Now begin the McFadden pseudo-R2 early stopping loop
     if reg_method == 'MAP':
-        last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
+        last_opt = get_w_CV(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
                         method=method, jac=jac, reg_method=reg_method, 
                         reg=(reg[0], reg[1][0][0], reg[1][0][1]),
-                        verbose=opt_verbose, slope_bound=slope_bound)
+                        verbose=opt_verbose, slope_bound=slope_bound,
+                        X_orig=X_orig, y_orig=y_orig)
     else:
-        last_opt = get_w(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
+        last_opt = get_w_CV(w_inits[0], X_bin, y_bin, nll_null, zero_prob=zero_prob, 
                         method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
-                        slope_bound=slope_bound)
+                        slope_bound=slope_bound, X_orig=X_orig, y_orig=y_orig)
     w_inits[0] = last_opt[0]
     last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
                             # procedure
@@ -730,21 +736,23 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
     for i in range(1, len(w_inits)):
         # Refit with next number of sites
         if reg_method == 'MAP':
-            new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
+            new_opt = get_w_CV(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
                             method=method,
                             jac=jac,
                             reg_method=reg_method,
                             reg=(reg[0], reg[1][i][0], reg[1][i][1]),
                             verbose=opt_verbose,
-                            slope_bound=slope_bound)
+                            slope_bound=slope_bound,
+                            X_orig=X_orig, y_orig=y_orig)
         else:
-            new_opt = get_w(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
+            new_opt = get_w_CV(w_inits[i], X_bin, y_bin, nll_null, zero_prob=zero_prob,
                             method=method,
                             jac=jac,
                             reg_method=reg_method,
                             reg=reg,
                             verbose=opt_verbose,
-                            slope_bound=slope_bound)
+                            slope_bound=slope_bound,
+                            X_orig=X_orig, y_orig=y_orig)
         w_inits[i] = new_opt[0]
         new_R2 = new_opt[2]
         BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
@@ -773,21 +781,23 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                                        size=len(X_bin), replace=True)
             Xdata, ydata = X_bin[samples], y_bin[samples]
             if reg_method == 'MAP':
-                opt = get_w(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
+                opt = get_w_CV(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
                                 method=method,
                                 jac=jac,
                                 reg_method=reg_method,
                                 reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
                                 verbose=opt_verbose,
-                                slope_bound=slope_bound)
+                                slope_bound=slope_bound,
+                                X_orig=X_orig, y_orig=y_orig)
             else:
-                opt = get_w(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
+                opt = get_w_CV(w_inits[final_ind], Xdata, ydata, nll_null, zero_prob=zero_prob,
                                 method=method,
                                 jac=jac,
                                 reg_method=reg_method,
                                 reg=reg,
                                 verbose=opt_verbose,
-                                slope_bound=slope_bound)
+                                slope_bound=slope_bound,
+                                X_orig=X_orig, y_orig=y_orig)
             
             params = opt[0]
             probs_pred = sigmoidND_nonlinear(sm.add_constant(X_all, has_constant='add'), 
@@ -801,19 +811,21 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
         null_weights = np.concatenate((np.array([beta_null]), 
                                     np.zeros(X_all.shape[-1])))
         nll_null = negLL_hotspot(null_weights, sm.add_constant(X_all, has_constant='add'),
-                                 y_bootstrapped_avg, False, 'none', 0)
+                                 y_bootstrapped_avg, False, reg_method, reg)
 
         if reg_method == 'MAP':
-            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
+            last_opt = get_w_CV(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
                         y_bootstrapped_avg, nll_null, zero_prob=zero_prob,
                         method=method, jac=jac, reg_method=reg_method, 
                         reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
-                        verbose=opt_verbose, slope_bound=slope_bound)
+                        verbose=opt_verbose, slope_bound=slope_bound,
+                        X_orig=X_orig, y_orig=y_orig)
         else:
-            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
+            last_opt = get_w_CV(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
                         y_bootstrapped_avg, nll_null, zero_prob=zero_prob,
                         method=method, jac=jac, reg_method=reg_method, reg=reg,
-                        verbose=opt_verbose, slope_bound=slope_bound)
+                        verbose=opt_verbose, slope_bound=slope_bound,
+                        X_orig=X_orig, y_orig=y_orig)
 
         w_inits[final_ind] = last_opt[0]
 
@@ -954,6 +966,7 @@ def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
     return opt, w_inits
 
 def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
+          X_orig=None, y_orig=None,
           reg_method='none', reg=0, slope_bound=20, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
@@ -991,6 +1004,80 @@ def get_w(w_init, X, y, nll_null, zero_prob=0.01, method='L-BFGS-B', jac=None,
     # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
                        args=(X, y, verbose, reg_method, reg), method=method,
+                        jac=jac, options=options)
+    
+    return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
+
+def get_w_CV(w_init, X, y, X_orig=None, y_orig=None, zero_prob=0.01, 
+          reg_method='none', reg=[], 
+          method='L-BFGS-B', jac=None, slope_bound=20, bias_bound=None, verbose=False,
+        #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
+          options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}, random_state=None):
+    """
+    Fitting function for fitting data with a specified number of hotspots
+    
+    Parameters:
+    w_init (m x (d + 1) np.ndarray): Initial guesses on parameters for model
+                                     with m hotspots
+    X (N x (d + 1) np.ndarray): Binary classification input data with constant term
+    y (N x 1 np.ndarray): Binary classification output data (0s or 1s)
+    nll_null (float): The negative log likelihood for the null model to the data 
+    zero_prob (float): The forced maximum probability at 0-vector
+    method (string): Optimization method according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Manual jacobian function
+    reg_method (string): Regularization method, only 'none' is currently supported
+    reg (float): Regularization parameter
+
+    Returns:
+    weights (m x (d + 1) np.ndarrray): Fitted weight vector
+    opt.fun (float): Minimized value of negative log likelihood
+    R2 (float): McFadden pseudo-R2 value
+    """
+
+    z = 1 - (1 - zero_prob)**(1/len(w_init))
+
+    # Set up bounds for constrained optimization
+    bounds = []
+    for j in range(len(w_init)):
+        bounds += [(bias_bound, np.log(z/(1-z)))]
+        for i in range(X.shape[-1] - 1):
+            bounds += [(-slope_bound, slope_bound)]
+
+    ybar = np.mean(y_orig)
+    beta_null = np.log(ybar / (1 - ybar))
+    null_weights = np.concatenate((np.array([beta_null]), 
+                                np.zeros(X_orig.shape[-1]-1)))
+
+    skf = model_selection.StratifiedKFold(n_splits=len(reg), shuffle=True, random_state=random_state)
+    performance = np.zeros(len(reg))
+    for i, (train_index, test_index) in enumerate(skf.split(X, y)):
+        X_train, y_train = X[train_index], y[train_index]
+
+        # Optimize the weight vector with MLE
+        opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
+                        args=(X_train, y_train, verbose, reg_method, reg[i]), method=method,
+                            jac=jac, options=options)
+
+        
+        nll_null_orig = negLL_hotspot(null_weights, sm.add_constant(X_orig, has_constant='add'),
+                                 y_orig, False, reg_method, reg[i])
+
+        nll_opt = negLL_hotspot(opt.x, sm.add_constant(X_orig, has_constant='add'),
+                                 y_orig, False, reg_method, reg[i])
+
+        performance[i] = 1 - nll_opt / nll_null_orig
+
+    best_ind = np.argmax(performance)
+
+    ybar = np.mean(y)
+    beta_null = np.log(ybar / (1 - ybar))
+    null_weights = np.concatenate((np.array([beta_null]), 
+                                   np.zeros(X.shape[-1]-1)))
+    nll_null = negLL_hotspot(null_weights, X, y, False, reg_method, reg)
+
+    opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
+                       args=(X, y, verbose, reg_method, reg[best_ind]), method=method,
                         jac=jac, options=options)
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
