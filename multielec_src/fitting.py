@@ -16,7 +16,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import multielec_src.multielec_utils as mutils
 
 def convertToBinaryClassifier(probs_, num_trials_, amplitudes_, degree=1, 
-                              interaction=True, min_trials=5, vote_by_majority=True):
+                              interaction=True, min_trials=1, vote_by_majority=False):
     """
     Converts input g-sort data of probabilities, trials, and 
     amplitudes. Includes a functionality for converting to data to a
@@ -487,7 +487,7 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         pass_inds=None, disambiguate=True, min_inds=0,
                         min_clean_inds=0, spont_limit=0.2, dist_thr=0.15,
                         bootstrapping=None, X_all=None, percentile=0.9,
-                        slope_bound=20, reg_method='none', reg=None, zero_prob=0.01,
+                        slope_bound=20, reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], zero_prob=0.01,
                         R2_thresh=0.05, opt_verbose=False):
     """
     Generate input list for multiprocessing fitting of sigmoids
@@ -651,8 +651,9 @@ def enforce_3D_monotonicity(index, Xdata, ydata, k=2,
         return False
 
 def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
-                        reg_method='none', reg=0, slope_bound=20, zero_prob=0.01,
-                        R2_thresh=0.05, opt_verbose=False, verbose=False,
+                        reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
+                        slope_bound=20, zero_prob=0.01,
+                        R2_thresh=0.1, opt_verbose=False, verbose=False,
                         method='L-BFGS-B', jac=None):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
@@ -686,6 +687,11 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                     next possible iteration of fitting
     """
     w_inits = copy.deepcopy(w_inits_)
+    if len(probs) == 0:
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+
+        return (deg_opt, 0, -1), w_inits
 
     # Convert the data to binary classification data
     X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
@@ -699,11 +705,13 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
     # Compute the negative log likelihood of the null model which only
     # includes an intercept
     ybar = np.mean(y_bin)
-    if len(probs) == 0 or ybar == 0:
+    if ybar == 0:
         deg_opt = np.zeros_like(w_inits[-1])
         deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
 
         return (deg_opt, 0, -1), w_inits
+
+    X_orig, y_orig = convertToBinaryClassifier(probs, T, X_expt, min_trials=1)
 
     # Now begin the McFadden pseudo-R2 early stopping loop
     if reg_method == 'MAP':
@@ -714,7 +722,8 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
     else:
         last_opt = get_w(w_inits[0], X_bin, y_bin, zero_prob=zero_prob, 
                         method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
-                        slope_bound=slope_bound)
+                        slope_bound=slope_bound,
+                        X_orig=X_orig, y_orig=y_orig)
     w_inits[0] = last_opt[0]
     last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
                             # procedure
@@ -740,7 +749,8 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                             reg_method=reg_method,
                             reg=reg,
                             verbose=opt_verbose,
-                            slope_bound=slope_bound)
+                            slope_bound=slope_bound,
+                            X_orig=X_orig, y_orig=y_orig)
         w_inits[i] = new_opt[0]
         new_R2 = new_opt[2]
         BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
@@ -783,7 +793,8 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                                 reg_method=reg_method,
                                 reg=reg,
                                 verbose=opt_verbose,
-                                slope_bound=slope_bound)
+                                slope_bound=slope_bound,
+                                X_orig=X_orig, y_orig=y_orig)
             
             params = opt[0]
             probs_pred = sigmoidND_nonlinear(sm.add_constant(X_all, has_constant='add'), 
@@ -802,7 +813,8 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
             last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
                         y_bootstrapped_avg, zero_prob=zero_prob,
                         method=method, jac=jac, reg_method=reg_method, reg=reg,
-                        verbose=opt_verbose, slope_bound=slope_bound)
+                        verbose=opt_verbose, slope_bound=slope_bound,
+                        X_orig=X_orig, y_orig=y_orig)
 
         w_inits[final_ind] = last_opt[0]
 
@@ -943,7 +955,8 @@ def fit_surface_CV(X_expt, probs, T, w_inits_, reg_method='none', reg=0,
     return opt, w_inits
 
 def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='none', reg=0, slope_bound=20, bias_bound=None, verbose=False,
+          X_orig=None, y_orig=None,
+          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=20, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
     """
@@ -981,17 +994,17 @@ def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), 
                                    np.zeros(X.shape[-1]-1)))
-    nll_null = negLL_hotspot(null_weights, X, y, False, reg_method, reg)
+    nll_null = negLL_hotspot(null_weights, X, y, False, reg_method, reg[0])
 
     # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
-                       args=(X, y, verbose, reg_method, reg), method=method,
+                       args=(X, y, verbose, reg_method, reg[0]), method=method,
                         jac=jac, options=options)
     
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
 def get_w_CV(w_init, X, y, X_orig=None, y_orig=None, zero_prob=0.01, 
-          reg_method='none', reg=[], 
+          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
           method='L-BFGS-B', jac=None, slope_bound=20, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}, random_state=None):
@@ -1026,31 +1039,38 @@ def get_w_CV(w_init, X, y, X_orig=None, y_orig=None, zero_prob=0.01,
         for i in range(X.shape[-1] - 1):
             bounds += [(-slope_bound, slope_bound)]
 
-    ybar = np.mean(y_orig)
+    if len(reg) > 1:
+        ybar = np.mean(y_orig)
+        beta_null = np.log(ybar / (1 - ybar))
+        null_weights = np.concatenate((np.array([beta_null]), 
+                                    np.zeros(X_orig.shape[-1]-1)))
+        skf = model_selection.KFold(n_splits=len(reg), shuffle=True, random_state=random_state)
+        performance = np.zeros(len(reg))
+        for i, (train_index, test_index) in enumerate(skf.split(X, y)):
+            X_train, y_train = X[train_index], y[train_index]
+
+            # Optimize the weight vector with MLE
+            opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
+                            args=(X_train, y_train, verbose, reg_method, reg[i]), method=method,
+                                jac=jac, options=options)
+
+            nll_null_orig = negLL_hotspot(null_weights, X_orig, y_orig, False, reg_method, reg[i])
+            nll_opt = negLL_hotspot(opt.x, X_orig, y_orig, False, reg_method, reg[i])
+
+            performance[i] = 1 - nll_opt / nll_null_orig
+
+        best_ind = np.argmax(performance)
+
+    else:
+        best_ind = 0
+
+    ybar = np.mean(y)
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), 
-                                np.zeros(X_orig.shape[-1]-1)))
+                                   np.zeros(X.shape[-1]-1)))
+    nll_null = negLL_hotspot(null_weights, X, y, False, reg_method, reg[best_ind])
 
-    skf = model_selection.StratifiedKFold(n_splits=len(reg), shuffle=True, random_state=random_state)
-    performance = np.zeros(len(reg))
-    for i, (train_index, test_index) in enumerate(skf.split(X, y)):
-        X_train, y_train = X[train_index], y[train_index]
-
-        # Optimize the weight vector with MLE
-        opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
-                        args=(X_train, y_train, verbose, reg_method, reg[i]), method=method,
-                            jac=jac, options=options)
-
-        
-        nll_null_orig = negLL_hotspot(null_weights, sm.add_constant(X_orig, has_constant='add'),
-                                 y_orig, False, reg_method, reg[i])
-
-        nll_opt = negLL_hotspot(opt.x, sm.add_constant(X_orig, has_constant='add'),
-                                 y_orig, False, reg_method, reg[i])
-
-        performance[i] = 1 - nll_opt / nll_null_orig
-
-    best_ind = np.argmax(performance)
+    # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
                        args=(X, y, verbose, reg_method, reg[best_ind]), method=method,
                         jac=jac, options=options)

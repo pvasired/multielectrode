@@ -262,7 +262,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           priors_array=None, regmap=None, trial_cap=25,
                           exploit_factor=0.75, data_1elec_array=None,
                           min_clean_inds=0, zero_prob=0.01, slope_bound=20, NUM_THREADS=24,
-                          bootstrapping=None, X_all=None, reg_method='none', regfit=None,
+                          bootstrapping=None, X_all=None, reg_method='l2', regfit=[0.01, 0.05, 0.1, 0.5, 1.0],
                           R2_thresh=0.05, opt_verbose=False):
 
     """
