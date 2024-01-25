@@ -65,7 +65,7 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
     return jax.scipy.special.logsumexp(sum_cells)
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=None, 
-                          step_size=1, n_steps=100, T_budget=5000, verbose=True):
+                          step_size=0.05, n_steps=2000, T_budget=10000, verbose=True):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -142,7 +142,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
     return np.array(losses), T
 
 def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_final=None, 
-                          budget=10000, reg=None, T_step_size=0.05, T_n_steps=5000, ms=[1],
+                          budget=10000, reg=None, T_step_size=0.05, T_n_steps=2000, ms=[1],
                           verbose=True, R2_cutoff=-np.inf, return_probs=False,
                           min_prob=0.2, trial_cap=25,
                           exploit_factor=0.75, zero_prob=0.01, slope_bound=20, NUM_THREADS=24,
