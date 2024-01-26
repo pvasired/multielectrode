@@ -363,8 +363,12 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 X = np.array([])
                 T = np.array([])
 
-            input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
-                            reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
+            if X_all is not None:
+                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
+                                reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
+            else:
+                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, None,
+                                reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
 
     return input_list
 
