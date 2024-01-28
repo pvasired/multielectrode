@@ -32,7 +32,7 @@ def activation_probs(x, w):
     return p
 
 @jax.jit
-def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
+def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     """
     Compute the Fisher loss across the entire array, taking logsumexp()
     to minimize the worst case.
@@ -52,7 +52,8 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
     """
     p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
                                                             # overflow errors
-    t = jnp.dot(transform_mat, trials).flatten()
+    trials_masked = jnp.where(bundle_mask, trials, 0)
+    t = jnp.dot(transform_mat, trials_masked).flatten()
     I_p = t / (p_model * (1 - p_model))
 
     # Avoiding creating the large diagonal matrix and storing in memory
@@ -64,8 +65,8 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials):
 
     return jax.scipy.special.logsumexp(sum_cells)
 
-def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=None, 
-                          step_size=0.05, n_steps=2000, T_budget=10000, verbose=True):
+def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask,
+                          reg=None, step_size=0.05, n_steps=2000, T_budget=10000, verbose=True):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -98,16 +99,16 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
     opt_state = optimizer.init(T)
 
     if reg is None:
-        init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+        init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
         reg = init_function / 20000 # 20000 worked, 100000 too large
 
     # Update function for computing the gradient
     @jax.jit
-    def update(jac_full, probs_vec, transform_mat, T_prev, T):
+    def update(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask):
         # Adding special l1-regularization term that controls the total trial budget
-        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T)) + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget)
+        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev, bundle_mask: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask) + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget)
 
-        grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev)
+        grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev, bundle_mask)
         
         return grads
     
@@ -118,7 +119,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
 
         # Update the optimizer
         # start_grad = time.time()
-        grads = update(jac_full, probs_vec, transform_mat, T_prev, T)
+        grads = update(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask)
         # print(time.time() - start_grad)
 
         # start_update = time.time()
@@ -128,11 +129,14 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, reg=Non
         # start_apply = time.time()
         T = optax.apply_updates(T, updates)
         # print(time.time() - start_apply)
+
+        # Mask the trials at bundle_mask to be zero
+        T = jnp.where(bundle_mask, T, 0)
         
         # start_verbose = time.time()
         # If desired, compute the losses and store them
         if verbose:
-            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T))
+            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
             loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget),
                             reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget))
             print(loss_tuple)
@@ -147,7 +151,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           min_prob=0.2, trial_cap=25,
                           exploit_factor=0.75, zero_prob=0.01, slope_bound=20, NUM_THREADS=24,
                           bootstrapping=None, X_all=None, reg_method='l2', regfit=[0],
-                          R2_thresh=0.05, opt_verbose=False):
+                          R2_thresh=0.05, opt_verbose=False, bundle_mask=None):
 
     """
     Parameters:
@@ -164,6 +168,12 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     """
 
     print('Setting up data...')
+
+    if bundle_mask is None:
+        bundle_mask = np.ones(T_prev.shape, dtype=bool)
+    else:
+        assert bundle_mask.shape == T_prev.shape, "bundle_mask must be the same shape as T_prev"
+        assert bundle_mask.dtype == bool, "bundle_mask must be a boolean array"
 
     # Create the array of all initial guesses if none is passed in
     if w_inits_array is None:
@@ -262,7 +272,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     else:
         T_new_init = jnp.array(jnp.absolute(jnp.array(t_final)), dtype='float32')
 
-    losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, 
+    losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, jnp.array(bundle_mask),
                                                     step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget*exploit_factor,
                                                     verbose=verbose)
 
@@ -287,10 +297,15 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                                     0, None)
 
     if np.sum(T_new) < budget:
-        random_extra = np.random.choice(len(T_new.flatten()), size=int(budget - np.sum(T_new)), replace=True)
-        T_new_uniform = np.array(np.bincount(random_extra, minlength=len(T_new.flatten())).astype(int).reshape(T_new.shape), dtype=float)
+        T_new_flat = T_new.flatten()
+        bundle_mask_flat = bundle_mask.flatten()
+        valid_indices = np.where(bundle_mask_flat)[0]
 
-        T_new = T_new + T_new_uniform
+        random_extra = np.random.choice(valid_indices, size=int(budget - np.sum(T_new)), replace=True)
+        counts = np.bincount(random_extra, minlength=len(T_new_flat))
+
+        T_new_flat += counts
+        T_new = T_new_flat.reshape(T_new.shape)
 
     capped_inds = np.where(T_new + T_prev >= trial_cap)
     T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],

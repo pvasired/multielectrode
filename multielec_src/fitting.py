@@ -308,6 +308,54 @@ def negLL_hotspot_jac(params, *args):
 
     return grad
 
+def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0, st=0.5):
+    """
+    A utility function that returns the set of amplitudes and probabilities
+    that satisfy the monotone requirement.
+
+    TODO: document.
+    """
+    probs = copy.deepcopy(probs_)
+
+    # Zero out the first few amplitudes
+    probs[0:n_amps_blank] = 0
+    mono_inds = np.argwhere(enforce_noisy_monotonicity(probs, st=st)).flatten()
+
+    return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds]
+
+def enforce_noisy_monotonicity(probs, st=.5, noise_limit=.8):
+    """
+    Enforces monotonicity in the raw probability data. Finds indices that 
+    violate monotonicity and excludes them in a final set for fitting.
+
+    Code written by Jeff Brown.
+
+    TODO: document.
+    """
+    J_array = []
+    max_value = st
+    trigger = False
+
+    for i in range(len(probs)):
+
+        if probs[i] >= max_value*noise_limit:
+            max_value = probs[i]
+            trigger = True
+            J_array += [1]
+        else:
+
+            if not trigger:
+                J_array += [1]
+            else:
+                J_array += [0]
+
+    J_array = np.array(J_array).astype(np.int16)
+
+    if J_array[0] == 1 and sum(J_array) == 1:
+        J_array[-1] = 1
+
+    return J_array
+
 # Numpy version of activation_probs()
 def sigmoidND_nonlinear(X, w):
     """
@@ -363,12 +411,8 @@ def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                 X = np.array([])
                 T = np.array([])
 
-            if X_all is not None:
-                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all[j],
-                                reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
-            else:
-                input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, None,
-                                reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
+            input_list += [(X, probs, T, w_inits_array[i][j], bootstrapping, X_all,
+                            reg_method, reg, slope_bound, zero_prob, R2_thresh, opt_verbose)]
 
     return input_list
 
