@@ -200,28 +200,43 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                                             reg_method=reg_method, reg=regfit, R2_thresh=R2_thresh,
                                             opt_verbose=opt_verbose)
     print('Fitting dataset...')
-    pool = mp.Pool(processes=NUM_THREADS)
-    results = pool.starmap_async(fitting.fit_surface, input_list)
-    mp_output = results.get()
-    pool.close()
 
     params_curr = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     w_inits_array = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]), dtype=object)
     R2s = np.zeros((probs_empirical.shape[0], probs_empirical.shape[1]))
     probs_curr = np.zeros(probs_empirical.shape)
 
-    cnt = 0
-    for i in range(len(probs_empirical)):
-        for j in range(len(probs_empirical[i])):
-            params_curr[i][j] = mp_output[cnt][0][0]
-            w_inits_array[i][j] = mp_output[cnt][1]
-            R2s[i][j] = mp_output[cnt][0][2]
-            
-            probs_curr[i][j] = fitting.sigmoidND_nonlinear(
-                                    sm.add_constant(amps[j], has_constant='add'), 
-                                    params_curr[i][j])
+    if type(NUM_THREADS) == int:
+        pool = mp.Pool(processes=NUM_THREADS)
+        results = pool.starmap_async(fitting.fit_surface, input_list)
+        mp_output = results.get()
+        pool.close()
 
-            cnt += 1
+        cnt = 0
+        for i in range(len(probs_empirical)):
+            for j in range(len(probs_empirical[i])):
+                params_curr[i][j] = mp_output[cnt][0][0]
+                w_inits_array[i][j] = mp_output[cnt][1]
+                R2s[i][j] = mp_output[cnt][0][2]
+                
+                probs_curr[i][j] = fitting.sigmoidND_nonlinear(
+                                        sm.add_constant(amps[j], has_constant='add'), 
+                                        params_curr[i][j])
+
+                cnt += 1
+    else:
+        cnt = 0
+        for i in range(len(probs_empirical)):
+            for j in range(len(probs_empirical[i])):
+                opt, w_inits_array[i][j] = fitting.fit_surface(*input_list[cnt])
+                params_curr[i][j] = opt[0]
+                R2s[i][j] = opt[2]
+                probs_curr[i][j] = fitting.sigmoidND_nonlinear(
+                                        sm.add_constant(amps[j], has_constant='add'), 
+                                        params_curr[i][j])
+
+                cnt += 1
+
 
     print('Calculating Jacobian...')
 
