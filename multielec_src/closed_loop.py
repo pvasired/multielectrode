@@ -66,7 +66,7 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     return jax.scipy.special.logsumexp(sum_cells)
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask,
-                          reg=None, step_size=0.05, n_steps=2000, T_budget=10000, verbose=True):
+                          reg=None, step_size=0.005, n_steps=3000, T_budget=10000, verbose=True):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -100,13 +100,13 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
 
     if reg is None:
         init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
-        reg = init_function / 20000 # 20000 worked, 100000 too large
+        reg = init_function / 1000000 # 10000 worked, 100000 too large
 
     # Update function for computing the gradient
     @jax.jit
     def update(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask):
         # Adding special l1-regularization term that controls the total trial budget
-        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev, bundle_mask: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask) + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget)
+        fisher_lambda = lambda T, jac_full, probs_vec, transform_mat, T_prev, bundle_mask: fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask) + reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2
 
         grads = jax.grad(fisher_lambda)(T, jac_full, probs_vec, transform_mat, T_prev, bundle_mask)
         
@@ -137,8 +137,8 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
         # If desired, compute the losses and store them
         if verbose:
             loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
-            loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget),
-                            reg * jnp.absolute(jnp.sum(jnp.absolute(T)) - T_budget))
+            loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2,
+                            reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2)
             print(loss_tuple)
             losses += [loss_tuple]
         # print(time.time() - start_verbose)

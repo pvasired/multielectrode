@@ -62,8 +62,12 @@ def convertToBinaryClassifier(probs_, num_trials_, amplitudes_, degree=1,
             X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
 
             # Append the 0s and 1s for this probability
-            y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
-
+            try:
+                y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
+            except:
+                print(num1s, num0s)
+                raise ValueError("Error in concatenating 0s and 1s")
+            
     assert len(X) > 0, "No data points were found with enough trials"
     
     # If desired, perform a polynomial transformation with cross terms
