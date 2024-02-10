@@ -66,7 +66,7 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     return jax.scipy.special.logsumexp(sum_cells)
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask,
-                          reg=None, step_size=0.005, n_steps=3000, T_budget=10000, verbose=True):
+                          reg=None, step_size=0.01, n_steps=3000, T_budget=10000, verbose=True):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
