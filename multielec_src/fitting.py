@@ -198,11 +198,12 @@ def negLL_hotspot(params, *args):
 
     # Get predicted probability of spike using current parameters
     response_mat = 1 / (1 + np.exp(-X @ w.T))
-    yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
+
+    episilon = 1e-9
+    yPred = np.clip(1 - np.multiply.reduce(1 - response_mat, axis=1), episilon, 1 - episilon)
     
     # negative log likelihood for logistic
-    episilon = 1e-9
-    NLL = -np.sum(y * np.log(yPred + episilon) + (1 - y) * np.log(1 - yPred + episilon)) 
+    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
     ###
 
     # Calculate negative log likelihood
