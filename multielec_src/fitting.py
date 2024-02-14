@@ -199,31 +199,28 @@ def negLL_hotspot(params, *args):
     # Get predicted probability of spike using current parameters
     response_mat = 1 / (1 + np.exp(-X @ w.T))
     yPred = 1 - np.multiply.reduce(1 - response_mat, axis=1)
-
-    # print(np.sum(np.absolute(yPred - yPred2)))
-    yPred[yPred == 1] = 0.999999     # some errors when yPred is exactly 1 due to taking log(1 - 1)
-    yPred[yPred == 0] = 0.000001
     
     # negative log likelihood for logistic
-    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
+    episilon = 1e-9
+    NLL = -np.sum(y * np.log(yPred + episilon) + (1 - y) * np.log(1 - yPred + episilon)) 
     ###
 
     # Calculate negative log likelihood
     # NLL2 = np.sum(np.log(1 + prod) - y * np.log(prod))
 
     # Add the regularization penalty term if desired
-    if method == 'l1':
-        # penalty term according to l1 regularization
-        penalty = reg*np.linalg.norm(w.flatten(), ord=1)
-    elif method == 'l2':
-        # penalty term according to l2 regularization
-        penalty = reg/2*np.linalg.norm(w.flatten())**2
-    elif method == 'MAP':
-        regmap, mu, cov = reg
-        # penalty term according to MAP with Gaussian prior
-        penalty = regmap * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
-    else:
-        penalty = 0
+    penalty = 0
+    if reg > 0:
+        if method == 'l1':
+            # penalty term according to l1 regularization
+            penalty = reg*np.linalg.norm(w.flatten(), ord=1)
+        elif method == 'l2':
+            # penalty term according to l2 regularization
+            penalty = reg/2*np.linalg.norm(w.flatten())**2
+        elif method == 'MAP':
+            regmap, mu, cov = reg
+            # penalty term according to MAP with Gaussian prior
+            penalty = regmap * 0.5 * (params - mu) @ np.linalg.inv(cov) @ (params - mu)
 
     if verbose:
         print(NLL, penalty)
