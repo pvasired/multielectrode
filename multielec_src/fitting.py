@@ -509,117 +509,166 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
 
         return (deg_opt, 0, -1), w_inits
 
-    X_orig, y_orig = convertToBinaryClassifier(probs, T, X_expt, min_trials=1)
-
-    # Now begin the McFadden pseudo-R2 early stopping loop
-    if reg_method == 'MAP':
-        last_opt = get_w(w_inits[0], X_bin, y_bin, zero_prob=zero_prob, 
-                        method=method, jac=jac, reg_method=reg_method, 
-                        reg=(reg[0], reg[1][0][0], reg[1][0][1]),
-                        verbose=opt_verbose, slope_bound=slope_bound)
-    else:
-        last_opt = get_w(w_inits[0], X_bin, y_bin, zero_prob=zero_prob, 
-                        method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
-                        slope_bound=slope_bound,
-                        X_orig=X_orig, y_orig=y_orig)
-    w_inits[0] = last_opt[0]
-    last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
-                            # procedure
-    BIC = len(w_inits[0].flatten()) * np.log(len(X_bin)) + 2 * last_opt[1]
-    HQC = 2 * len(w_inits[0].flatten()) * np.log(np.log(len(X_bin))) + 2 * last_opt[1]
-    if verbose:
-        print(last_opt, last_R2, BIC, HQC)
-
-    for i in range(1, len(w_inits)):
-        # Refit with next number of sites
-        if reg_method == 'MAP':
-            new_opt = get_w(w_inits[i], X_bin, y_bin, zero_prob=zero_prob,
-                            method=method,
-                            jac=jac,
-                            reg_method=reg_method,
-                            reg=(reg[0], reg[1][i][0], reg[1][i][1]),
-                            verbose=opt_verbose,
-                            slope_bound=slope_bound)
-        else:
-            new_opt = get_w(w_inits[i], X_bin, y_bin, zero_prob=zero_prob,
-                            method=method,
-                            jac=jac,
-                            reg_method=reg_method,
-                            reg=reg,
-                            verbose=opt_verbose,
-                            slope_bound=slope_bound,
-                            X_orig=X_orig, y_orig=y_orig)
-        w_inits[i] = new_opt[0]
-        new_R2 = new_opt[2]
-        BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
-        HQC = 2 * len(w_inits[i].flatten()) * np.log(np.log(len(X_bin))) + 2 * new_opt[1]
-
-        if verbose:
-            print(new_opt, new_R2, BIC, HQC)
-
-        # If the pseudo-R2 improvement was too small, break and stop adding sites
-        if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
-            final_ind = i - 1
-            break
-
-        last_opt = new_opt
-        last_R2 = new_R2
-        final_ind = i
-
-    # If bootstrapping is desired, perform bootstrapping
-
     if bootstrapping is not None:
         assert type(bootstrapping) == int, "bootstrapping must be an integer"
         assert X_all is not None, "X_all must be provided if bootstrapping is desired"
         y_bootstrapped = np.zeros((bootstrapping, len(X_all)))
-        for i in range(bootstrapping):
+        for k in range(bootstrapping):
             samples = np.random.choice(np.arange(len(X_bin), dtype=int),
                                        size=len(X_bin), replace=True)
             Xdata, ydata = X_bin[samples], y_bin[samples]
+
+            # Now begin the McFadden pseudo-R2 early stopping loop
             if reg_method == 'MAP':
-                opt = get_w(w_inits[final_ind], Xdata, ydata, zero_prob=zero_prob,
+                last_opt = get_w(w_inits[0], Xdata, ydata, zero_prob=zero_prob, 
+                                method=method, jac=jac, reg_method=reg_method, 
+                                reg=(reg[0], reg[1][0][0], reg[1][0][1]),
+                                verbose=opt_verbose, slope_bound=slope_bound)
+            else:
+                last_opt = get_w(w_inits[0], Xdata, ydata, zero_prob=zero_prob, 
+                                method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
+                                slope_bound=slope_bound)
+            w_inits[0] = last_opt[0]
+            last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
+                                    # procedure
+
+            for i in range(1, len(w_inits)):
+                # Refit with next number of sites
+                if reg_method == 'MAP':
+                    new_opt = get_w(w_inits[i], Xdata, ydata, zero_prob=zero_prob,
+                                    method=method,
+                                    jac=jac,
+                                    reg_method=reg_method,
+                                    reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                                    verbose=opt_verbose,
+                                    slope_bound=slope_bound)
+                else:
+                    new_opt = get_w(w_inits[i], Xdata, ydata, zero_prob=zero_prob,
+                                    method=method,
+                                    jac=jac,
+                                    reg_method=reg_method,
+                                    reg=reg,
+                                    verbose=opt_verbose,
+                                    slope_bound=slope_bound)
+                w_inits[i] = new_opt[0]
+                new_R2 = new_opt[2]
+
+                # If the pseudo-R2 improvement was too small, break and stop adding sites
+                if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
+                    break
+
+                last_opt = new_opt
+                last_R2 = new_R2
+            
+            probs_pred = sigmoidND_nonlinear(sm.add_constant(X_all, has_constant='add'),
+                                                last_opt[0])
+            y_bootstrapped[k] = probs_pred
+        
+        y_bootstrapped_avg = np.mean(y_bootstrapped, axis=0)
+
+        # Now begin the McFadden pseudo-R2 early stopping loop
+        if reg_method == 'MAP':
+            last_opt = get_w(w_inits[0], sm.add_constant(X_all, has_constant='add'), 
+                            y_bootstrapped_avg, zero_prob=zero_prob, 
+                            method=method, jac=jac, reg_method=reg_method, 
+                            reg=(reg[0], reg[1][0][0], reg[1][0][1]),
+                            verbose=opt_verbose, slope_bound=slope_bound)
+        else:
+            last_opt = get_w(w_inits[0], sm.add_constant(X_all, has_constant='add'),
+                            y_bootstrapped_avg, zero_prob=zero_prob, 
+                            method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
+                            slope_bound=slope_bound)
+        w_inits[0] = last_opt[0]
+        last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
+                                # procedure
+
+        for i in range(1, len(w_inits)):
+            # Refit with next number of sites
+            if reg_method == 'MAP':
+                new_opt = get_w(w_inits[i], sm.add_constant(X_all, has_constant='add'),
+                                y_bootstrapped_avg, zero_prob=zero_prob,
                                 method=method,
                                 jac=jac,
                                 reg_method=reg_method,
-                                reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
+                                reg=(reg[0], reg[1][i][0], reg[1][i][1]),
                                 verbose=opt_verbose,
                                 slope_bound=slope_bound)
             else:
-                opt = get_w(w_inits[final_ind], Xdata, ydata, zero_prob=zero_prob,
+                new_opt = get_w(w_inits[i], sm.add_constant(X_all, has_constant='add'),
+                                y_bootstrapped_avg, zero_prob=zero_prob,
                                 method=method,
                                 jac=jac,
                                 reg_method=reg_method,
                                 reg=reg,
                                 verbose=opt_verbose,
-                                slope_bound=slope_bound,
-                                X_orig=X_orig, y_orig=y_orig)
-            
-            params = opt[0]
-            probs_pred = sigmoidND_nonlinear(sm.add_constant(X_all, has_constant='add'), 
-                                             params)
-            y_bootstrapped[i] = probs_pred
+                                slope_bound=slope_bound)
+            w_inits[i] = new_opt[0]
+            new_R2 = new_opt[2]
+
+            # If the pseudo-R2 improvement was too small, break and stop adding sites
+            if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
+                break
+
+            last_opt = new_opt
+            last_R2 = new_R2
         
-        y_bootstrapped_avg = np.mean(y_bootstrapped, axis=0)
-
+        return last_opt, w_inits
+    
+    else:
+        # Now begin the McFadden pseudo-R2 early stopping loop
         if reg_method == 'MAP':
-            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
-                        y_bootstrapped_avg, zero_prob=zero_prob,
-                        method=method, jac=jac, reg_method=reg_method, 
-                        reg=(reg[0], reg[1][final_ind][0], reg[1][final_ind][1]),
-                        verbose=opt_verbose, slope_bound=slope_bound)
+            last_opt = get_w(w_inits[0], X_bin, y_bin, zero_prob=zero_prob, 
+                            method=method, jac=jac, reg_method=reg_method, 
+                            reg=(reg[0], reg[1][0][0], reg[1][0][1]),
+                            verbose=opt_verbose, slope_bound=slope_bound)
         else:
-            last_opt = get_w(w_inits[final_ind], sm.add_constant(X_all, has_constant='add'), 
-                        y_bootstrapped_avg, zero_prob=zero_prob,
-                        method=method, jac=jac, reg_method=reg_method, reg=reg,
-                        verbose=opt_verbose, slope_bound=slope_bound,
-                        X_orig=X_orig, y_orig=y_orig)
+            last_opt = get_w(w_inits[0], X_bin, y_bin, zero_prob=zero_prob, 
+                            method=method, jac=jac, reg_method=reg_method, reg=reg, verbose=opt_verbose,
+                            slope_bound=slope_bound)
+        w_inits[0] = last_opt[0]
+        last_R2 = last_opt[2]   # store the pseudo-R2 value for early stopping
+                                # procedure
+        BIC = len(w_inits[0].flatten()) * np.log(len(X_bin)) + 2 * last_opt[1]
+        HQC = 2 * len(w_inits[0].flatten()) * np.log(np.log(len(X_bin))) + 2 * last_opt[1]
+        if verbose:
+            print(last_opt, last_R2, BIC, HQC)
 
-        w_inits[final_ind] = last_opt[0]
+        for i in range(1, len(w_inits)):
+            # Refit with next number of sites
+            if reg_method == 'MAP':
+                new_opt = get_w(w_inits[i], X_bin, y_bin, zero_prob=zero_prob,
+                                method=method,
+                                jac=jac,
+                                reg_method=reg_method,
+                                reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                                verbose=opt_verbose,
+                                slope_bound=slope_bound)
+            else:
+                new_opt = get_w(w_inits[i], X_bin, y_bin, zero_prob=zero_prob,
+                                method=method,
+                                jac=jac,
+                                reg_method=reg_method,
+                                reg=reg,
+                                verbose=opt_verbose,
+                                slope_bound=slope_bound)
+            w_inits[i] = new_opt[0]
+            new_R2 = new_opt[2]
+            BIC = len(w_inits[i].flatten()) * np.log(len(X_bin)) + 2 * new_opt[1]
+            HQC = 2 * len(w_inits[i].flatten()) * np.log(np.log(len(X_bin))) + 2 * new_opt[1]
 
-    return last_opt, w_inits
+            if verbose:
+                print(new_opt, new_R2, BIC, HQC)
+
+            # If the pseudo-R2 improvement was too small, break and stop adding sites
+            if last_R2 > 0 and (new_R2 - last_R2) / last_R2 <= R2_thresh:
+                break
+
+            last_opt = new_opt
+            last_R2 = new_R2
+        
+        return last_opt, w_inits
 
 def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          X_orig=None, y_orig=None,
           reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=20, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
@@ -665,4 +714,5 @@ def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
                        args=(X, y, verbose, reg_method, reg[0]), method=method,
                         jac=jac, options=options)
     
+    print (X.shape, opt.nit, opt.nfev, opt.njev, (1 - opt.fun / nll_null))
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
