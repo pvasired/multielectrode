@@ -32,6 +32,26 @@ def activation_probs(x, w):
     return p
 
 @jax.jit
+def activation_probs_erf(x, w):
+    """
+    Activation probabilities using hotspot model.
+
+    Parameters:
+    w (n x d jnp.DeviceArray): Site weights
+    x (c x d jnp.DeviceArray): Current levels
+
+    Returns:
+    p (c x 1 jnp.DeviceArray): Predicted probabilities
+    """
+    # w : site weights, n x d
+    # x : current levels, c x d
+    site_activations = jnp.dot(w, jnp.transpose(x)) # dimensions: n x c
+    p_sites = 0.5 + 0.5*jax.scipy.special.erf(site_activations) # dimensions : n x c
+    p = 1 - jnp.prod(1 - p_sites, 0)  # dimensions: c
+
+    return p
+
+@jax.jit
 def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     """
     Compute the Fisher loss across the entire array, taking logsumexp()
