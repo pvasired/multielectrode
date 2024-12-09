@@ -70,14 +70,14 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     loss (float): The whole array Fisher information loss, taking logsumexp() across
                   cells to minimize the worst case.
     """
-    p_model = jnp.clip(probs_vec, a_min=1e-5, a_max=1-1e-5) # need to clip these to prevent
+    p_model = jnp.clip(probs_vec, a_min=1e-8, a_max=1-1e-8) # need to clip these to prevent
                                                             # overflow errors
     trials_masked = jnp.where(bundle_mask, trials, 0)
     t = jnp.dot(transform_mat, trials_masked).flatten()
-    I_p = t / (p_model * (1 - p_model))
+    I_p = t / (p_model * (1 - p_model) + 1e-8)
 
     # Avoiding creating the large diagonal matrix and storing in memory
-    I_w = jnp.dot((jac_full.T * I_p), jac_full) / len(p_model)
+    I_w = jnp.dot((jac_full.T * I_p), jac_full) / len(p_model) + 1e-8 * jnp.eye(jac_full.shape[1])
     
     # Avoiding multiplying the matrices out and calculating the trace explicitly
     sum_probs = jnp.sum(jnp.multiply(jac_full.T, jnp.linalg.solve(I_w, jac_full.T)), axis=0)
@@ -86,7 +86,8 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
     return jax.scipy.special.logsumexp(sum_cells)
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask,
-                          reg=None, step_size=0.01, n_steps=3000, T_budget=10000, verbose=True):
+                          reg=None, step_size=0.01, n_steps=3000, T_budget=10000, verbose=True,
+                          patience=100, min_delta=100):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -105,6 +106,31 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
     losses (np.ndarray): An array of losses per iteration of the optimization routine
     T (jnp.DeviceArray): The optimized trials matrix 
     """
+    # Early stopping class
+    class EarlyStopping:
+        def __init__(self, patience=10, min_delta=0):
+            """
+            :param patience: How many epochs to wait before stopping when the loss isn't decreasing.
+            :param min_delta: Minimum change in the monitored quantity to qualify as an improvement.
+            """
+            self.patience = patience
+            self.min_delta = min_delta
+            self.counter = 0
+            self.best_score = None
+            self.stop = False
+
+        def step(self, val_loss):
+            score = -val_loss
+            if self.best_score is None:
+                self.best_score = score
+            elif score < self.best_score + self.min_delta:
+                self.counter += 1
+                if self.counter >= self.patience:
+                    self.stop = True
+            else:
+                self.best_score = score
+                self.counter = 0
+
     # Exponential decay of the learning rate.
     # scheduler = optax.exponential_decay(
     #     init_value=step_size, 
@@ -117,6 +143,7 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
     # optimizer = optax.lion(step_size/3)
     # optimizer = optax.sgd(learning_rate=scheduler)
     opt_state = optimizer.init(T)
+    early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
 
     if reg is None:
         init_function = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
@@ -155,12 +182,19 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
         
         # start_verbose = time.time()
         # If desired, compute the losses and store them
+        loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
+        loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2,
+                        reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2)
         if verbose:
-            loss = fisher_loss_max(probs_vec, transform_mat, jac_full, T_prev + jnp.absolute(T), bundle_mask)
-            loss_tuple = (loss, jnp.sum(jnp.absolute(T)), loss + reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2,
-                            reg * (jnp.sum(jnp.absolute(T)) - T_budget)**2)
             print(loss_tuple)
-            losses += [loss_tuple]
+        losses += [loss_tuple]
+
+        # Check for early stopping
+        early_stopping.step(loss)
+
+        if early_stopping.stop:
+            print("Early stopping at step", step)
+            break
         # print(time.time() - start_verbose)
 
     return np.array(losses), T
@@ -169,7 +203,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           budget=10000, reg=None, T_step_size=0.05, T_n_steps=2000, ms=[1],
                           verbose=True, R2_cutoff=-np.inf, return_probs=False,
                           min_prob=0.2, trial_cap=25,
-                          exploit_factor=0.75, zero_prob=0.01, slope_bound=20, NUM_THREADS=24,
+                          exploit_factor=0.75, zero_prob=0.01, slope_bound=100, NUM_THREADS=24,
                           bootstrapping=None, X_all=None, reg_method='l2', regfit=[0],
                           R2_thresh=0.05, opt_verbose=False, bundle_mask=None):
 
@@ -190,7 +224,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     print('Setting up data...')
 
     if bundle_mask is None:
-        bundle_mask = np.ones(T_prev.shape, dtype=bool)
+        bundle_mask = T_prev < trial_cap
     else:
         assert bundle_mask.shape == T_prev.shape, "bundle_mask must be the same shape as T_prev"
         assert bundle_mask.dtype == bool, "bundle_mask must be a boolean array"
@@ -328,6 +362,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
 
     T_new = np.array(T_new)
     capped_inds = np.where(T_new + T_prev >= trial_cap)
+    uncapped_inds_flat = np.where(T_new.flatten() + T_prev.flatten() < trial_cap)[0]
     T_new[capped_inds[0], capped_inds[1]] = np.clip(trial_cap - T_prev[capped_inds[0], capped_inds[1]],
                                                     0, None)
 
@@ -335,6 +370,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
         T_new_flat = T_new.flatten()
         bundle_mask_flat = bundle_mask.flatten()
         valid_indices = np.where(bundle_mask_flat)[0]
+        valid_indices = np.intersect1d(valid_indices, uncapped_inds_flat)
 
         random_extra = np.random.choice(valid_indices, size=int(budget - np.sum(T_new)), replace=True)
         counts = np.bincount(random_extra, minlength=len(T_new_flat))
