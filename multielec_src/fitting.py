@@ -106,56 +106,6 @@ def noInteractionPoly(amplitudes, degree):
     # Add a constant column to the output
     return sm.add_constant(np.hstack(higher_order), has_constant='add')
 
-def negLL(params, *args):
-    """
-    Compute the negative log likelihood for a logistic regression
-    binary classification task.
-
-    Parameters:
-    params (np.ndarray): Weight vector to be fit, same dimension as
-                         axis=1 dimension of X (see below)
-    *args (tuple): X (np.ndarray) output of convertToBinaryClassifier,
-                   y (np.ndarray) output of convertToBinaryClassifier,
-                   verbose (bool) increases verbosity
-                   method: regularization method. 'MAP' (maximum a 
-                           posteriori), 'l1', and 'l2' are supported.
-    
-    Returns:
-    negLL (float): negative log likelihood of the data given the 
-                   current parameters, possibly plus a regularization
-                   term.
-    """
-    X, y, verbose, method = args
-    
-    w = params
-    
-    # Get predicted probability of spike using current parameters
-    yPred = 1 / (1 + np.exp(-X @ w))
-    yPred[yPred == 1] = 0.999999     # some errors when yPred is 
-                                     # exactly 1 due to taking 
-                                     # log(1 - 1)
-    yPred[yPred == 0] = 0.000001
-
-    # Calculate negative log likelihood
-    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred))     
-
-    if method == 'MAP':
-        # penalty term according to MAP regularization
-        penalty = 0.5 * (w - mu) @ np.linalg.inv(cov) @ (w - mu)
-    elif method == 'l1':
-        # penalty term according to l1 regularization
-        penalty = l1_reg*np.linalg.norm(w, ord=1)
-    elif method == 'l2':
-        # penalty term according to l2 regularization
-        penalty = l2_reg*np.linalg.norm(w)
-    else:
-         penalty = 0
-
-    if verbose:
-        print(NLL, penalty)
-
-    return(NLL + penalty)
-
 def negLL_hotspot(params, *args):
     """
     Compute the negative log likelihood for a logistic regression
@@ -385,7 +335,7 @@ def negLL_hotspot_jac(params, *args):
 
     return grad
 
-def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0, st=0.5):
+def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0, st=0.5, return_inds=False):
     """
     A utility function that returns the set of amplitudes and probabilities
     that satisfy the monotone requirement.
@@ -398,7 +348,10 @@ def get_monotone_probs_and_amps(amplitudes,probs_,trials,n_amps_blank=0, st=0.5)
     probs[0:n_amps_blank] = 0
     mono_inds = np.argwhere(enforce_noisy_monotonicity(probs, st=st)).flatten()
 
-    return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds]
+    if not return_inds:
+        return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds]
+    else:
+        return amplitudes[mono_inds],probs[mono_inds], trials[mono_inds], mono_inds
 
 def enforce_noisy_monotonicity(probs, st=.5, noise_limit=.8):
     """
@@ -470,7 +423,7 @@ def sigmoidND_nonlinear_erf(X, w):
 # Need to check modificiation of input arrays in this
 def generate_input_list(all_probs_, amps_, trials_, w_inits_array, min_prob,
                         bootstrapping=None, X_all=None,
-                        slope_bound=20, reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], zero_prob=0.01,
+                        slope_bound=100, reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], zero_prob=0.01,
                         R2_thresh=0.05, opt_verbose=False):
     """
     Generate input list for multiprocessing fitting of sigmoids
@@ -542,8 +495,8 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 
 def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                         reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
-                        slope_bound=20, zero_prob=0.01,
-                        R2_thresh=0.1, opt_verbose=False, verbose=False,
+                        slope_bound=100, zero_prob=0.01,
+                        R2_thresh=0.1, opt_verbose=False, verbose=True,
                         method='L-BFGS-B', jac=None):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
@@ -760,9 +713,208 @@ def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
         
         return last_opt, w_inits
     
+def fit_surface_earlystop(X_expt, probs, T, w_inits_, 
+                          R2_thresh=0.1, test_size=0.2,
+                        reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
+                        slope_bound=100, zero_prob=0.01,
+                        opt_verbose=False, verbose=True,
+                        method='L-BFGS-B', jac=None, random_state=None):
+    """
+    Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
+    This function is primarily a wrapper for calling get_w() in the framework of 
+    early stopping using the McFadden pseudo-R2 metric.
+
+    Parameters:
+    X_expt (N x d np.ndarray): Input amplitudes
+    probs (N x 1 np.ndarray): Probabilities corresponding to the amplitudes
+    T (N x 1 np.ndarray): Trials at each amplitude
+    w_inits (list): List of initial guessses for each number of hotspots. Each element
+                    in the list is a (m x (d + 1)) np.ndarray with m the number of 
+                    hotspots. This list should be generated externally.
+    R2_thresh (float): Threshold used for determining when to stop adding hotspots
+    zero_prob (float): Value for what the probability should be forced to be below
+                       at an amplitude of 0-vector
+    verbose (bool): Increases verbosity
+    method (string): Method for optimization according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Jacobian function if manually calculated
+    reg_method (string): Regularization method. 'l2' is supported
+    reg (float): Regularization parameter value
+    min_prob (float): Minimum probability that must be exceeded in the dataset for
+                      fitting to occur and to not return the null parameters
+
+    Returns:
+    last_opt[0] (m x (d + 1) np.ndarray): The optimized set of parameters for the 
+                                          optimized number of hotspots m using
+                                          McFadden Pseudo-R2 and early stopping
+    w_inits (list): The new initial guesses for each number of hotspots for the
+                    next possible iteration of fitting
+    """
+    w_inits = copy.deepcopy(w_inits_)
+    if len(probs) == 0:
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+
+        return (deg_opt, 0, -1), w_inits
+
+    # Convert the data to binary classification data
+    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
+    X_train, X_test, y_train, y_test = model_selection.train_test_split(X_bin, y_bin, test_size=test_size, random_state=random_state)
+
+    test_R2s = np.zeros(len(w_inits))
+    opts = []
+    for i in range(len(w_inits)):
+        if reg_method == 'MAP':
+            opt = get_w(w_inits[i], X_train, y_train, zero_prob=zero_prob,
+                                        method=method, 
+                                        jac=jac, 
+                                        reg_method=reg_method,
+                                        reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                                        verbose=opt_verbose, 
+                                        slope_bound=slope_bound)
+        else:
+            opt = get_w(w_inits[i], X_train, y_train, 
+                                                        zero_prob=zero_prob, 
+                                                        method=method, 
+                                                        jac=jac, 
+                                                        reg_method=reg_method, 
+                                                        reg=reg, 
+                                                        verbose=opt_verbose,
+                                                        slope_bound=slope_bound)
+        test_fun = negLL_hotspot(opt[0], X_test, y_test, opt_verbose, reg_method, reg[0])
+
+        # Compute the negative log likelihood of the null model which only
+        # includes an intercept
+        ybar_test = np.mean(y_test)
+        beta_null_test = np.log(ybar_test / (1 - ybar_test))
+        null_weights_test = np.concatenate((np.array([beta_null_test]), 
+                                             np.zeros(X_expt.shape[-1])))
+        nll_null_test = negLL_hotspot(null_weights_test, X_test, y_test, False, reg_method, reg[0])
+
+        test_R2 = 1 - test_fun / nll_null_test
+        if verbose:
+            print(f'Number of sites: {len(w_inits[i])}, Test R2: {test_R2}')
+        test_R2s[i] = test_R2
+        opts.append(opt)
+
+        if i > 0:
+            if test_R2s[i-1] > 0 and (test_R2s[i] - test_R2s[i-1]) / test_R2s[i-1] <= R2_thresh:
+                return opts[i-1], w_inits
+            
+    return opt, w_inits
+    
+def fit_surface_CV(X_expt, probs, T, w_inits_, 
+                        reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
+                        slope_bound=100, zero_prob=0.01,
+                        opt_verbose=False, verbose=True,
+                        method='L-BFGS-B', jac=None, random_state=None):
+    """
+    Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
+    This function is primarily a wrapper for calling get_w() in the framework of 
+    early stopping using the McFadden pseudo-R2 metric.
+
+    Parameters:
+    X_expt (N x d np.ndarray): Input amplitudes
+    probs (N x 1 np.ndarray): Probabilities corresponding to the amplitudes
+    T (N x 1 np.ndarray): Trials at each amplitude
+    w_inits (list): List of initial guessses for each number of hotspots. Each element
+                    in the list is a (m x (d + 1)) np.ndarray with m the number of 
+                    hotspots. This list should be generated externally.
+    R2_thresh (float): Threshold used for determining when to stop adding hotspots
+    zero_prob (float): Value for what the probability should be forced to be below
+                       at an amplitude of 0-vector
+    verbose (bool): Increases verbosity
+    method (string): Method for optimization according to constrained optimization
+                     methods available in scipy.optimize.minimize
+    jac (function): Jacobian function if manually calculated
+    reg_method (string): Regularization method. 'l2' is supported
+    reg (float): Regularization parameter value
+    min_prob (float): Minimum probability that must be exceeded in the dataset for
+                      fitting to occur and to not return the null parameters
+
+    Returns:
+    last_opt[0] (m x (d + 1) np.ndarray): The optimized set of parameters for the 
+                                          optimized number of hotspots m using
+                                          McFadden Pseudo-R2 and early stopping
+    w_inits (list): The new initial guesses for each number of hotspots for the
+                    next possible iteration of fitting
+    """
+    w_inits = copy.deepcopy(w_inits_)
+    if len(probs) == 0:
+        deg_opt = np.zeros_like(w_inits[-1])
+        deg_opt[:, 0] = np.ones(len(deg_opt)) * -np.inf
+
+        return (deg_opt, 0, -1), w_inits
+
+    # Convert the data to binary classification data
+    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
+
+    # Stratified K Fold Cross Validation to choose number of sites
+    skf = model_selection.StratifiedKFold(n_splits=len(w_inits), shuffle=True, random_state=random_state)
+    test_R2s = np.zeros(len(w_inits))
+    for i, (train_index, test_index) in enumerate(skf.split(X_bin, y_bin)):
+        X_train, X_test = X_bin[train_index], X_bin[test_index]
+        y_train, y_test = y_bin[train_index], y_bin[test_index]
+
+        if reg_method == 'MAP':
+            opt = get_w(w_inits[i], X_train, y_train, zero_prob=zero_prob,
+                                        method=method, 
+                                        jac=jac, 
+                                        reg_method=reg_method,
+                                        reg=(reg[0], reg[1][i][0], reg[1][i][1]),
+                                        verbose=opt_verbose, 
+                                        slope_bound=slope_bound)
+        else:
+            opt = get_w(w_inits[i], X_train, y_train, 
+                                                        zero_prob=zero_prob, 
+                                                        method=method, 
+                                                        jac=jac, 
+                                                        reg_method=reg_method, 
+                                                        reg=reg, 
+                                                        verbose=opt_verbose,
+                                                        slope_bound=slope_bound)
+        test_fun = negLL_hotspot(opt[0], X_test, y_test, opt_verbose, reg_method, reg[0])
+
+        # Compute the negative log likelihood of the null model which only
+        # includes an intercept
+        ybar_test = np.mean(y_test)
+        beta_null_test = np.log(ybar_test / (1 - ybar_test))
+        null_weights_test = np.concatenate((np.array([beta_null_test]), 
+                                             np.zeros(X_expt.shape[-1])))
+        nll_null_test = negLL_hotspot(null_weights_test, X_test, y_test, False, 'none', 0)
+
+        test_R2 = 1 - test_fun / nll_null_test
+        if verbose:
+            print(f'Number of sites: {i + 1}, Test R2: {test_R2}')
+        test_R2s[i] = test_R2
+
+    best_num_sites = np.argmax(test_R2s)
+    if verbose:
+        print(f'Best number of sites: {best_num_sites + 1}')
+
+    # Now fit to the entire dataset with the best number of sites
+    if reg_method == 'MAP':
+        last_opt = get_w(w_inits[best_num_sites], X_bin, y_bin, zero_prob=zero_prob,
+                                        method=method, 
+                                        jac=jac, 
+                                        reg_method=reg_method,
+                                        reg=(reg[0], reg[1][best_num_sites][0], reg[1][best_num_sites][1]),
+                                        verbose=opt_verbose, 
+                                        slope_bound=slope_bound)
+    else:
+        last_opt = get_w(w_inits[best_num_sites], X_bin, y_bin, 
+                                                        zero_prob=zero_prob, 
+                                                        method=method, 
+                                                        jac=jac, 
+                                                        reg_method=reg_method, 
+                                                        reg=reg, 
+                                                        verbose=opt_verbose,
+                                                        slope_bound=slope_bound)
+    return last_opt, w_inits
+    
 def fit_surface_erf(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                         reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
-                        slope_bound=20, zero_prob=0.01,
+                        slope_bound=100, zero_prob=0.01,
                         R2_thresh=0.1, opt_verbose=False, verbose=False,
                         method='L-BFGS-B', jac=None):
     """
@@ -981,9 +1133,9 @@ def fit_surface_erf(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
         return last_opt, w_inits
 
 def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=20, bias_bound=None, verbose=False,
+          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=100, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
-          options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
+          options={'maxiter': 200000, 'ftol': 1e-15, 'maxfun': 200000}):
     """
     Fitting function for fitting data with a specified number of hotspots
     
@@ -1026,11 +1178,11 @@ def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
                        args=(X, y, verbose, reg_method, reg[0]), method=method,
                         jac=jac, options=options)
     
-    print (X.shape, opt.nit, opt.nfev, opt.njev, (1 - opt.fun / nll_null))
+    # print (X.shape, opt.nit, opt.nfev, opt.njev, (1 - opt.fun / nll_null))
     return opt.x.reshape(-1, X.shape[-1]), opt.fun, (1 - opt.fun / nll_null)
 
 def get_w_erf(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
-          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=20, bias_bound=None, verbose=False,
+          reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=100, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 20000, 'ftol': 1e-10, 'maxfun': 20000}):
     """
