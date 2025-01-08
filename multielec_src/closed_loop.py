@@ -87,7 +87,7 @@ def fisher_loss_max(probs_vec, transform_mat, jac_full, trials, bundle_mask):
 
 def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_mask,
                           reg=None, step_size=0.01, n_steps=3000, T_budget=10000, verbose=True,
-                          patience=100, min_delta=100):
+                          patience=100, min_delta=100, min_steps=100):
     """
     Fisher optimization loop using optax and AdamW optimizer.
 
@@ -193,8 +193,12 @@ def optimize_fisher_array(jac_full, probs_vec, transform_mat, T_prev, T, bundle_
         early_stopping.step(loss)
 
         if early_stopping.stop:
-            print("Early stopping at step", step)
-            break
+            if step > min_steps:
+                if verbose:
+                    print("Early stopping at step", step)
+                break
+            else:
+                early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
         # print(time.time() - start_verbose)
 
     return np.array(losses), T
@@ -205,7 +209,7 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
                           min_prob=0.2, trial_cap=25,
                           exploit_factor=0.75, zero_prob=0.01, slope_bound=100, NUM_THREADS=24,
                           bootstrapping=None, X_all=None, reg_method='l2', regfit=[0],
-                          R2_thresh=0.05, opt_verbose=False, bundle_mask=None):
+                          R2_thresh=0.05, opt_verbose=False, bundle_mask=None, patience=100, min_delta=100, min_steps=100):
 
     """
     Parameters:
@@ -341,22 +345,25 @@ def fisher_sampling_1elec(probs_empirical, T_prev, amps, w_inits_array=None, t_f
     else:
         T_new_init = jnp.array(jnp.absolute(jnp.array(t_final)), dtype='float32')
 
-    losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, jnp.array(bundle_mask),
-                                                    step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget*exploit_factor,
-                                                    verbose=verbose)
+    if exploit_factor != 0:
+        losses, t_final = optimize_fisher_array(jac_full, probs_vec, transform_mat, jnp.array(T_prev, dtype='float32'), T_new_init, jnp.array(bundle_mask),
+                                                        step_size=T_step_size, n_steps=T_n_steps, reg=reg, T_budget=budget*exploit_factor,
+                                                        verbose=verbose, patience=patience, min_delta=min_delta, min_steps=min_steps)
+        
+        if verbose:
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+            axs[0].plot(losses[:, 0])
+            axs[0].set_ylabel('Fisher Loss (A-optimality)')
+            axs[1].plot(losses[:, 1])
+            axs[1].set_ylabel('Total Trials')
+            axs[2].plot(losses[:, 2])
+            axs[2].set_ylabel('Regularized Loss, reg=' + str(reg))
 
-    if verbose:
-        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-        axs[0].plot(losses[:, 0])
-        axs[0].set_ylabel('Fisher Loss (A-optimality)')
-        axs[1].plot(losses[:, 1])
-        axs[1].set_ylabel('Total Trials')
-        axs[2].plot(losses[:, 2])
-        axs[2].set_ylabel('Regularized Loss, reg=' + str(reg))
-
-        fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
-        plt.savefig(f'plots_CL.png', dpi=300)
-        plt.show(block=False)
+            fig.tight_layout() # Or equivalently,  "plt.tight_layout()"
+            plt.savefig(f'plots_CL.png', dpi=300)
+            plt.show(block=False)
+    else:
+        t_final = jnp.zeros(T_prev.shape)
 
     T_new = jnp.round(jnp.absolute(t_final), 0)
 

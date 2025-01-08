@@ -5,6 +5,7 @@ from sklearn.preprocessing import PolynomialFeatures
 import sklearn.model_selection as model_selection
 import statsmodels.api as sm
 from scipy.optimize import minimize
+from scipy.special import expit
 from itertools import chain, combinations
 import copy
 import matplotlib.pyplot as plt
@@ -148,7 +149,7 @@ def negLL_hotspot(params, *args):
     # yPred2 = 1 / (1 + np.exp(-np.log(prod)))
 
     # Get predicted probability of spike using current parameters
-    response_mat = 1 / (1 + np.exp(-X @ w.T))
+    response_mat = expit(X @ w.T)
 
     episilon = 1e-9
     yPred = np.clip(1 - np.multiply.reduce(1 - response_mat, axis=1), episilon, 1 - episilon)
@@ -399,7 +400,7 @@ def sigmoidND_nonlinear(X, w):
     Returns:
     response (np.ndarray): Probabilities with same length as X
     """
-    response_mat = 1 / (1 + np.exp(-X @ w.T))
+    response_mat = expit(X @ w.T)
     response = 1 - np.multiply.reduce(1 - response_mat, axis=1)
     return response
 
@@ -496,7 +497,7 @@ def selectivity_triplet(ws, targets, curr_min=-1.8, curr_max=1.8, num_currs=40):
 def fit_surface(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
                         reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], 
                         slope_bound=100, zero_prob=0.01,
-                        R2_thresh=0.1, opt_verbose=False, verbose=True,
+                        R2_thresh=0.1, opt_verbose=False, verbose=False,
                         method='L-BFGS-B', jac=None):
     """
     Fitting function for fitting surfaces to nonlinear data with multi-hotspot model.
