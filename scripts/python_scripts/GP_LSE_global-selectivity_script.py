@@ -111,6 +111,10 @@ success_fractions_all = []
 success_fractions_random_all = []
 num_samples_all = []
 num_samples_random_all = []
+RMSEs_all = []
+RMSEs_random_all = []
+MAEs_all = []
+MAEs_random_all = []
 
 for run in range(NUM_RUNS):
     print(f'Run {run+1}/{NUM_RUNS}')
@@ -126,12 +130,19 @@ for run in range(NUM_RUNS):
                         np.ones(len(subsample_inds)*len(selectivities[pattern][2]))*T,
                         error_rate_0=error_rate_0, error_rate_1=error_rate_1)
     selec_probs = global_selectivity(probs.reshape(len(selectivities[pattern][2]), len(subsample_inds)))
+    selec_probs_random = deepcopy(selec_probs)
 
     num_samples = []
     num_samples_random = []
 
     success_fractions = []
     success_fractions_random = []
+
+    RMSEs = []
+    MAEs = []
+
+    RMSEs_random = []
+    MAEs_random = []
     for step in range(num_steps):
         # Step 1: fitting the GP model
 
@@ -139,15 +150,23 @@ for run in range(NUM_RUNS):
         selec_probs = np.clip(selec_probs, 1e-2, 1-1e-2)
         y = np.log(selec_probs/(1-selec_probs))
 
+        Xdata_random = amps_plot[subsample_inds_random]
+        selec_probs_random = np.clip(selec_probs_random, 1e-2, 1-1e-2)
+        y_random = np.log(selec_probs_random/(1-selec_probs_random))
+
         # Assuming Xdata and y are in numpy format, convert them to torch tensors
         amps_plot_torch = torch.tensor(amps_plot, dtype=torch.float32)
         X_train = torch.tensor(Xdata, dtype=torch.float32)
         y_train = torch.tensor(y.reshape(-1), dtype=torch.float32)
+        X_train_random = torch.tensor(Xdata_random, dtype=torch.float32)
+        y_train_random = torch.tensor(y_random.reshape(-1), dtype=torch.float32)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         amps_plot_torch = amps_plot_torch.to(device)
         X_train = X_train.to(device)
         y_train = y_train.to(device)
+        X_train_random = X_train_random.to(device)
+        y_train_random = y_train_random.to(device)
 
         # Define the GP Model
         class GPRegressionModel(gpytorch.models.ExactGP):
@@ -230,17 +249,82 @@ for run in range(NUM_RUNS):
                 print(f"  Lengthscale: {model.covar_module.lengthscale}")
                 print(f"  Noise: {model.likelihood.noise_covar.noise}")
 
+        # Initialize the likelihood and model
+        likelihood_random = GaussianLikelihood()
+        model_random = GPRegressionModel(X_train_random, y_train_random, likelihood_random)
+
+        model_random = model_random.to(device)
+        likelihood_random = likelihood_random.to(device)
+
+        # Set model and likelihood in training mode
+        model_random.train()
+        likelihood_random.train()
+
+        # Use an optimizer
+        optimizer_random = torch.optim.AdamW([{'params': model_random.parameters()}], lr=1e-2)
+
+        # Set up marginal log likelihood for GPyTorch
+        mll_random = gpytorch.mlls.ExactMarginalLogLikelihood(likelihood_random, model_random)
+
+        # Early stopping setup
+        early_stopping_random = EarlyStopping(patience=10, min_delta=1e-3)
+
+        # Training loop with early stopping
+        training_iter = 10000
+        losses_train_random = []
+        for i in range(training_iter):
+            model_random.train()
+            likelihood_random.train()
+            optimizer_random.zero_grad()
+            output_train_random = model_random(X_train_random)
+
+            loss_train_random = -mll_random(output_train_random, y_train_random)
+
+            losses_train_random.append(loss_train_random.item())
+            loss_train_random.backward()
+            optimizer_random.step()
+            early_stopping_random.step(loss_train_random.item())
+
+            if early_stopping_random.stop:
+                print(f"Early stopping triggered at iteration {i + 1}")
+                break
+
+            if i % 10 == 0:
+                print(f"Iteration {i + 1}/{training_iter} - Training Loss: {loss_train_random.item()}")
+                print(f"  Lengthscale: {model_random.covar_module.lengthscale}")
+                print(f"  Noise: {model_random.likelihood.noise_covar.noise}")
         # Step 2: Model evaluation and plotting
 
         # Model evaluation
         model.eval()
+        model_random.eval()
         likelihood.eval()
+        likelihood_random.eval()
         with torch.no_grad():
             # Get model predictions
             predictions = likelihood(model(amps_plot_torch))
+            predictions_random = likelihood_random(model_random(amps_plot_torch))
             mean = predictions.mean
+            mean_random = predictions_random.mean
             var = predictions.variance
+            var_random = predictions_random.variance
             lower, upper = predictions.confidence_region()
+            lower_random, upper_random = predictions_random.confidence_region()
+
+        probs_pred = 1/(1 + np.exp(-mean.cpu().numpy().flatten()))
+        probs_pred_random = 1/(1 + np.exp(-mean_random.cpu().numpy().flatten()))
+        selective_inds = np.where(selectivities[pattern][1] > lcb_cutoff)[0]
+
+        RMSE = np.sqrt(np.mean((probs_pred[selective_inds] - selectivities[pattern][0][selective_inds])**2))
+        RMSE_random = np.sqrt(np.mean((probs_pred_random[selective_inds] - selectivities[pattern][0][selective_inds])**2))
+        MAE = np.mean(np.abs(probs_pred[selective_inds] - selectivities[pattern][0][selective_inds]))
+        MAE_random = np.mean(np.abs(probs_pred_random[selective_inds] - selectivities[pattern][0][selective_inds]))
+        RMSEs.append(RMSE)
+        RMSEs_random.append(RMSE_random)
+        MAEs.append(MAE)
+        MAEs_random.append(MAE_random)
+        print(f'RMSE: {RMSE}, RMSE (Random): {RMSE_random}')
+        print(f'MAE: {MAE}, MAE (Random): {MAE_random}')
 
         ucb = mean.cpu().numpy().flatten() + beta*np.sqrt(var.cpu().numpy().flatten())
         lcb = mean.cpu().numpy().flatten() - beta*np.sqrt(var.cpu().numpy().flatten())
@@ -269,7 +353,10 @@ for run in range(NUM_RUNS):
             print('No points above cutoff')
             break
         
-        new_inds = allowed_inds[np.flip(np.argsort(ucb[allowed_inds]))[:batch_size]]
+        # new_inds = allowed_inds[np.flip(np.argsort(ucb[allowed_inds]))[:batch_size]]
+        new_inds = np.random.choice(allowed_inds[np.where(ucb[allowed_inds] > lcb_cutoff)[0]], 
+                                    size=batch_size if len(np.where(ucb[allowed_inds] > lcb_cutoff)[0]) >= batch_size else len(np.where(ucb[allowed_inds] > lcb_cutoff)[0]), 
+                                    replace=False)
         subsample_inds = np.hstack((subsample_inds, new_inds))
         new_probs = sample_spikes(selectivities[pattern][2][:, new_inds].flatten(), 
                                 np.ones(len(new_inds)*len(selectivities[pattern][2]))*T,
@@ -277,20 +364,37 @@ for run in range(NUM_RUNS):
         selec_probs = np.hstack((selec_probs, global_selectivity(new_probs.reshape(len(selectivities[pattern][2]), len(new_inds)))))
 
         allowed_inds_random = np.setdiff1d(np.arange(len(amps_plot)), subsample_inds_random)
-        subsample_inds_random = np.union1d(subsample_inds_random, np.random.choice(allowed_inds_random, size=batch_size, replace=False))
-    
+        new_inds_random = np.random.choice(allowed_inds_random, size=len(new_inds), replace=False)
+        subsample_inds_random = np.hstack((subsample_inds_random, new_inds_random))
+        new_probs_random = sample_spikes(selectivities[pattern][2][:, new_inds_random].flatten(), 
+                                        np.ones(len(new_inds_random)*len(selectivities[pattern][2]))*T,
+                                        error_rate_0=error_rate_0, error_rate_1=error_rate_1)
+        selec_probs_random = np.hstack((selec_probs_random, global_selectivity(new_probs_random.reshape(len(selectivities[pattern][2]), len(new_inds_random)))))
+        
     success_fractions_all.append(success_fractions)
     success_fractions_random_all.append(success_fractions_random)
     num_samples_all.append(num_samples)
     num_samples_random_all.append(num_samples_random)
+    RMSEs_all.append(RMSEs)
+    RMSEs_random_all.append(RMSEs_random)
+    MAEs_all.append(MAEs)
+    MAEs_random_all.append(MAEs_random)
 
 success_fractions_all = np.array(success_fractions_all, dtype=object)
 success_fractions_random_all = np.array(success_fractions_random_all, dtype=object)
 num_samples_all = np.array(num_samples_all, dtype=object)
 num_samples_random_all = np.array(num_samples_random_all, dtype=object)
+RMSEs_all = np.array(RMSEs_all, dtype=object)
+RMSEs_random_all = np.array(RMSEs_random_all, dtype=object)
+MAEs_all = np.array(MAEs_all, dtype=object)
+MAEs_random_all = np.array(MAEs_random_all, dtype=object)
 
 np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}.npz',
         success_fractions_all=success_fractions_all,
         success_fractions_random_all=success_fractions_random_all,
         num_samples_all=num_samples_all,
-        num_samples_random_all=num_samples_random_all)
+        num_samples_random_all=num_samples_random_all,
+        RMSEs_all=RMSEs_all,
+        RMSEs_random_all=RMSEs_random_all,
+        MAEs_all=MAEs_all,
+        MAEs_random_all=MAEs_random_all)
