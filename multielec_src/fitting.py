@@ -12,78 +12,78 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.special import erf, erfinv
 
-def convertToBinaryClassifier(probs_, num_trials_, amplitudes_, degree=1, 
-                              interaction=True, min_trials=1, vote_by_majority=False):
-    """
-    Converts input g-sort data of probabilities, trials, and 
-    amplitudes. Includes a functionality for converting to data to a
-    polynomial transformation which is now largely deprecated.
+# def convertToBinaryClassifier(probs_, num_trials_, amplitudes_, degree=1, 
+#                               interaction=True, min_trials=1, vote_by_majority=False):
+#     """
+#     Converts input g-sort data of probabilities, trials, and 
+#     amplitudes. Includes a functionality for converting to data to a
+#     polynomial transformation which is now largely deprecated.
 
-    Parameters:
-    probs (N x 1 np.ndarray): The input probabilities
-    num_trials (N x 1 np.ndarray): The input number of trials used for
-                                   each probability
-    amplitudes (N x k np.ndarray): The amplitude (vectors) of current
-                                   stimulus. Supports multi-electrode
-                                   stimulation.
+#     Parameters:
+#     probs (N x 1 np.ndarray): The input probabilities
+#     num_trials (N x 1 np.ndarray): The input number of trials used for
+#                                    each probability
+#     amplitudes (N x k np.ndarray): The amplitude (vectors) of current
+#                                    stimulus. Supports multi-electrode
+#                                    stimulation.
     
-    Optional Arguments:
-    degree (int): The polynomial transformation degree, default 1
-    interaction (bool): Whether or not to include cross terms in the
-                        construction of the polynomial transform.
+#     Optional Arguments:
+#     degree (int): The polynomial transformation degree, default 1
+#     interaction (bool): Whether or not to include cross terms in the
+#                         construction of the polynomial transform.
     
-    Return:
-    X (np.ndarray): The binary classifier inputs with constant term
-                    and possibly polynomial tranformation terms added.
-                    The shape of this array is related to the number
-                    of trials per amplitude, the number of amplitudes,
-                    the stimulation current vector sizes, and the 
-                    polynomical transformation degree.
+#     Return:
+#     X (np.ndarray): The binary classifier inputs with constant term
+#                     and possibly polynomial tranformation terms added.
+#                     The shape of this array is related to the number
+#                     of trials per amplitude, the number of amplitudes,
+#                     the stimulation current vector sizes, and the 
+#                     polynomical transformation degree.
 
-    y (np.ndarray): The binary classifier outputs consisting of 0s and
-                    1s, with the same length as X.
-    """
-    probs = copy.deepcopy(probs_)
-    num_trials = copy.deepcopy(num_trials_)
-    amplitudes = copy.deepcopy(amplitudes_)
+#     y (np.ndarray): The binary classifier outputs consisting of 0s and
+#                     1s, with the same length as X.
+#     """
+#     probs = copy.deepcopy(probs_)
+#     num_trials = copy.deepcopy(num_trials_)
+#     amplitudes = copy.deepcopy(amplitudes_)
 
-    y = []
-    X = []
-    num_trials = num_trials.astype(int) # convert to integer
-    for j in range(len(amplitudes)):
-        if num_trials[j] >= min_trials:
-            if vote_by_majority:
-                num_trials[j] = 1
-                probs[j] = np.around(probs[j], 0)
+#     y = []
+#     X = []
+#     num_trials = num_trials.astype(int) # convert to integer
+#     for j in range(len(amplitudes)):
+#         if num_trials[j] >= min_trials:
+#             if vote_by_majority:
+#                 num_trials[j] = 1
+#                 probs[j] = np.around(probs[j], 0)
 
-            # Calculate the number of 1s and 0s for each probability
-            num1s = int(np.around(probs[j] * num_trials[j], 0))
-            num0s = num_trials[j] - num1s
+#             # Calculate the number of 1s and 0s for each probability
+#             num1s = int(np.around(probs[j] * num_trials[j], 0))
+#             num0s = num_trials[j] - num1s
 
-            # Append all the amplitudes for this probability
-            X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
+#             # Append all the amplitudes for this probability
+#             X.append(np.tile(amplitudes[j], (num_trials[j], 1)))
 
-            # Append the 0s and 1s for this probability
-            try:
-                y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
-            except:
-                print(num1s, num0s)
-                raise ValueError("Error in concatenating 0s and 1s")
+#             # Append the 0s and 1s for this probability
+#             try:
+#                 y.append(np.concatenate((np.ones(num1s), np.zeros(num0s))))
+#             except:
+#                 print(num1s, num0s)
+#                 raise ValueError("Error in concatenating 0s and 1s")
             
-    assert len(X) > 0, "No data points were found with enough trials"
+#     assert len(X) > 0, "No data points were found with enough trials"
     
-    # If desired, perform a polynomial transformation with cross terms
-    if interaction == True:
-        poly = PolynomialFeatures(degree)
-        X = poly.fit_transform(np.concatenate(X))
+#     # If desired, perform a polynomial transformation with cross terms
+#     if interaction == True:
+#         poly = PolynomialFeatures(degree)
+#         X = poly.fit_transform(np.concatenate(X))
 
-    # If no cross terms are desired
-    else:
-        X = noInteractionPoly(np.concatenate(X), degree)
+#     # If no cross terms are desired
+#     else:
+#         X = noInteractionPoly(np.concatenate(X), degree)
     
-    y = np.concatenate(y)
+#     y = np.concatenate(y)
     
-    return X, y
+#     return X, y
 
 def noInteractionPoly(amplitudes, degree):
     """
@@ -133,7 +133,7 @@ def negLL_hotspot(params, *args):
                    current parameters, possibly plus a regularization
                    term.
     """
-    X, y, verbose, method, reg = args
+    X, y, trials, verbose, method, reg = args
     
     w = params.reshape(-1, X.shape[-1]).astype(float)
 
@@ -155,7 +155,7 @@ def negLL_hotspot(params, *args):
     yPred = np.clip(1 - np.multiply.reduce(1 - response_mat, axis=1), episilon, 1 - episilon)
     
     # negative log likelihood for logistic
-    NLL = -np.sum(y * np.log(yPred) + (1 - y) * np.log(1 - yPred)) 
+    NLL = -np.sum(trials * (y * np.log(yPred) + (1 - y) * np.log(1 - yPred)))
     ###
 
     # Calculate negative log likelihood
@@ -758,15 +758,15 @@ def fit_surface_earlystop(X_expt, probs, T, w_inits_,
 
         return (deg_opt, 0, -1), w_inits
 
-    # Convert the data to binary classification data
-    X_bin, y_bin = convertToBinaryClassifier(probs, T, X_expt)
-    X_train, X_test, y_train, y_test = model_selection.train_test_split(X_bin, y_bin, test_size=test_size, random_state=random_state)
+    X_const = sm.add_constant(X_expt, has_constant='add')
+    X_train, X_test, y_train, y_test, T_train, T_test = model_selection.train_test_split(X_const, probs, T,
+                                                                                         test_size=test_size, random_state=random_state)
 
     test_R2s = np.zeros(len(w_inits))
     opts = []
     for i in range(len(w_inits)):
         if reg_method == 'MAP':
-            opt = get_w(w_inits[i], X_train, y_train, zero_prob=zero_prob,
+            opt = get_w(w_inits[i], X_train, y_train, T_train, zero_prob=zero_prob,
                                         method=method, 
                                         jac=jac, 
                                         reg_method=reg_method,
@@ -774,7 +774,7 @@ def fit_surface_earlystop(X_expt, probs, T, w_inits_,
                                         verbose=opt_verbose, 
                                         slope_bound=slope_bound)
         else:
-            opt = get_w(w_inits[i], X_train, y_train, 
+            opt = get_w(w_inits[i], X_train, y_train, T_train,
                                                         zero_prob=zero_prob, 
                                                         method=method, 
                                                         jac=jac, 
@@ -782,7 +782,7 @@ def fit_surface_earlystop(X_expt, probs, T, w_inits_,
                                                         reg=reg, 
                                                         verbose=opt_verbose,
                                                         slope_bound=slope_bound)
-        test_fun = negLL_hotspot(opt[0], X_test, y_test, opt_verbose, reg_method, reg[0])
+        test_fun = negLL_hotspot(opt[0], X_test, y_test, T_test, opt_verbose, reg_method, reg[0])
 
         # Compute the negative log likelihood of the null model which only
         # includes an intercept
@@ -790,7 +790,7 @@ def fit_surface_earlystop(X_expt, probs, T, w_inits_,
         beta_null_test = np.log(ybar_test / (1 - ybar_test))
         null_weights_test = np.concatenate((np.array([beta_null_test]), 
                                              np.zeros(X_expt.shape[-1])))
-        nll_null_test = negLL_hotspot(null_weights_test, X_test, y_test, False, reg_method, reg[0])
+        nll_null_test = negLL_hotspot(null_weights_test, X_test, y_test, T_test, False, reg_method, reg[0])
 
         test_R2 = 1 - test_fun / nll_null_test
         if verbose:
@@ -1133,7 +1133,7 @@ def fit_surface_erf(X_expt, probs, T, w_inits_, bootstrapping=None, X_all=None,
         
         return last_opt, w_inits
 
-def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
+def get_w(w_init, X, y, T, zero_prob=0.01, method='L-BFGS-B', jac=None,
           reg_method='l2', reg=[0.01, 0.05, 0.1, 0.5, 1.0], slope_bound=100, bias_bound=None, verbose=False,
         #   options={'maxiter': 15000, 'ftol': 2.220446049250313e-09, 'maxfun': 15000}):
           options={'maxiter': 200000, 'ftol': 1e-15, 'maxfun': 200000}):
@@ -1172,11 +1172,11 @@ def get_w(w_init, X, y, zero_prob=0.01, method='L-BFGS-B', jac=None,
     beta_null = np.log(ybar / (1 - ybar))
     null_weights = np.concatenate((np.array([beta_null]), 
                                    np.zeros(X.shape[-1]-1)))
-    nll_null = negLL_hotspot(null_weights, X, y, False, reg_method, reg[0])
+    nll_null = negLL_hotspot(null_weights, X, y, T, False, reg_method, reg[0])
 
     # Optimize the weight vector with MLE
     opt = minimize(negLL_hotspot, x0=w_init.ravel(), bounds=bounds,
-                       args=(X, y, verbose, reg_method, reg[0]), method=method,
+                       args=(X, y, T, verbose, reg_method, reg[0]), method=method,
                         jac=jac, options=options)
     
     # print (X.shape, opt.nit, opt.nfev, opt.njev, (1 - opt.fun / nll_null))
