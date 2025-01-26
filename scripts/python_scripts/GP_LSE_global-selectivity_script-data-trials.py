@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]= '2'
+os.environ["CUDA_VISIBLE_DEVICES"]= '3'
 import numpy as np
 from scipy.io import loadmat
 from copy import deepcopy
@@ -11,6 +11,55 @@ import gpytorch
 from gpytorch.means import ConstantMean
 from gpytorch.kernels import RBFKernel
 from gpytorch.likelihoods import GaussianLikelihood
+
+def sample_spikes(spikes, t):
+    # Important: assumes spikes is shuffled
+    """
+    Helper function to sample spikes from a Bernoulli distribution.
+
+    Parameters:
+    spikes (np.ndarray AMPLITUDES X trials): possibly jagged array of spiking trials for a given (cell, pattern)
+    t (np.ndarray AMPLITUDES X 1): Number of trials across amplitudes for a given (cell, pattern)
+
+    Returns:
+    p_empirical_array (np.ndarray): Empirical probability of a spike across
+                              amplitude for a given (cell, pattern)
+    """
+    assert len(spikes) == len(t), "Number of amplitudes does not match number of trials"
+    t = np.array(t).astype(int)
+    
+    p_empirical = np.zeros(len(t))
+    for i in range(len(t)):
+        # If there are no trials, set the empirical probability to 0.5
+        if t[i] == 0:
+            p_empirical[i] = 0.5
+        else:
+            if t[i] <= len(spikes[i]):
+                p_empirical[i] = np.mean(spikes[i][:t[i]])
+            else:
+                p_empirical[i] = np.mean(spikes[i])
+        
+    return p_empirical
+
+def sample_spikes_array(all_spikes, trials):
+    """
+    Sample spikes across all cells and patterns using multiprocessing.
+
+    Parameters:
+    all_spikes (np.ndarray CELLS X 1): spikes for all cells and patterns
+    trials (np.ndarray AMPLITUDES x 1): Number of trials
+
+    Returns:
+    p_empirical_array (np.ndarray CELLS X AMPLITUDES): Empirical probability of a spike across
+                                    all cells and patterns
+    """
+
+    # Set up a list for multiprocessing
+    probs_empirical_array = np.zeros((len(all_spikes), len(trials)))
+    for i in range(len(all_spikes)):
+        probs_empirical_array[i] = sample_spikes(all_spikes[i], trials)
+    
+    return probs_empirical_array
 
 def global_selectivity(probs_2d):
     target_probs = np.max(probs_2d, axis=0)
@@ -78,16 +127,28 @@ for file in file_list:
         probs_remaining = fitting.sigmoidND_nonlinear(sm.add_constant(amps_remaining, has_constant='add'),
                                                     params)
         probs_flipped[remaining_inds] = np.where(probs_remaining > 0.5, 1, 0)
+        
+        num_trials = all_trials[p-1]
+        spikes_cp = []
+        for i in range(len(num_trials)):
+            num1s = int(np.around(probs_flipped[i] * num_trials[i], 0))
+            num0s = num_trials[i] - num1s
+
+            spikes_amp = np.random.permutation(np.concatenate((np.ones(num1s), np.zeros(num0s)))).astype(int)
+            spikes_cp.append(spikes_amp)
+        spikes_cp = np.array(spikes_cp, dtype=object)
 
         if p not in patterns:
             patterns[p] = []
-        patterns[p].append((c, probs_flipped))
+        patterns[p].append((c, probs_flipped, spikes_cp, num_trials))
 
 selectivities = {}
 for p in patterns:
-    cells = [c for c, _ in patterns[p]]
-    probs_all = np.vstack([probs for _, probs in patterns[p]])
-    print(probs_all.shape)
+    cells = [c for c, _, _, _ in patterns[p]]
+    probs_all = np.vstack([probs for _, probs, _, _ in patterns[p]])
+    spikes_all = np.array([spikes for _, _, spikes, _ in patterns[p]], dtype=object)
+    trials_all = patterns[p][0][-1]
+    print(probs_all.shape, spikes_all.shape)
 
     if len(cells) < 2:
         continue
@@ -96,14 +157,22 @@ for p in patterns:
     selectivity = np.clip(selectivity, 1e-2, 1-1e-2)
 
     selectivity_logit = np.log(selectivity/(1-selectivity))
-    selectivities[p] = (selectivity, selectivity_logit, probs_all)
+    selectivities[p] = (selectivity, selectivity_logit, probs_all, spikes_all, trials_all)
     print(p, np.amax(selectivity))
 
-beta = 2
-lcb_cutoff = 2.2
-batch_size = 100
-num_steps = 30
-init_fraction = 0.05
+for p in patterns:
+    spikes_all = selectivities[p][3]
+    probs_all = selectivities[p][2]
+
+    for i in range(len(spikes_all)):
+        for j in range(len(spikes_all[i])):
+            assert np.around(np.mean(spikes_all[i][j]), 3) == np.around(probs_all[i][j], 3), f"Mismatch between spikes and true probabilities at ({i}, {j}, {k})"
+
+beta = 1
+lcb_cutoff = 2.2    # ln(0.8/0.2) = 1.5, ln(0.9/0.1) = 2.2
+batch_size = 1000
+num_steps = 10
+init_trials = 1000
 
 pattern = 311
 
@@ -120,16 +189,19 @@ MAEs_random_all = []
 MAEs_multisite_all = []
 
 for run in range(NUM_RUNS):
-    print(f'Run {run+1}/{NUM_RUNS}')
     # Step 0: Initialize the data
+    init_inds = np.random.choice(np.arange(len(amps_gsort), dtype=int), init_trials, replace=True)
 
-    subsample_inds = np.random.choice(np.arange(len(amps_gsort)),
-                                        size=int(init_fraction*len(amps_gsort)),
-                                        replace=False)
+    # Count occurrences of each index
+    T_prev = np.bincount(init_inds, minlength=len(amps_gsort))
+    T_prev_random = deepcopy(T_prev)
+    max_trials = selectivities[pattern][4]
+
+    subsample_inds = np.where(T_prev > 0)[0]
+    probs = sample_spikes_array(selectivities[pattern][3], T_prev)
+    selec_probs = global_selectivity(probs[:, subsample_inds])
+
     subsample_inds_random = deepcopy(subsample_inds)
-
-    probs = selectivities[pattern][2][:, subsample_inds]
-    selec_probs = global_selectivity(probs)
     selec_probs_random = deepcopy(selec_probs)
 
     num_samples = []
@@ -319,9 +391,10 @@ for run in range(NUM_RUNS):
 
         probs_multisite = np.zeros((len(selectivities[pattern][2]), len(amps_gsort)))
         for cell_idx in range(len(selectivities[pattern][2])):
-            X_sub = amps_gsort[subsample_inds_random]
-            probs_fit_sub = deepcopy(selectivities[pattern][2][cell_idx, subsample_inds_random])
-            T_sub = np.ones_like(probs_fit_sub) * 20
+            X_sub = deepcopy(amps_gsort[subsample_inds_random])
+            probs_fit_sub = deepcopy(sample_spikes_array(selectivities[pattern][3], T_prev_random)[cell_idx, subsample_inds_random])
+            T_sub = deepcopy(T_prev_random[subsample_inds_random])
+
             w_inits = []
             for m in ms:
                 w_init = np.array(np.random.normal(size=(m, X_sub.shape[1]+1)))
@@ -341,17 +414,22 @@ for run in range(NUM_RUNS):
             probs_multisite[cell_idx, :] = probs_subsample
 
         selec_multisite = global_selectivity(probs_multisite)
-
+        selec_multisite = np.clip(selec_multisite, 1e-2, 1-1e-2)
+        selec_multisite_logit = np.log(selec_multisite/(1-selec_multisite))
         probs_pred = 1/(1 + np.exp(-mean.cpu().numpy().flatten()))
         probs_pred_random = 1/(1 + np.exp(-mean_random.cpu().numpy().flatten()))
-        selective_inds = np.where(selectivities[pattern][1] > lcb_cutoff)[0]
+
+        # Inds where either the prediction or the true selectivity is above the cutoff
+        selective_inds = np.where((selectivities[pattern][1] > lcb_cutoff) | (mean.cpu().numpy().flatten() > lcb_cutoff))[0]
+        selective_inds_random = np.where((selectivities[pattern][1] > lcb_cutoff) | (mean_random.cpu().numpy().flatten() > lcb_cutoff))[0]
+        selective_inds_multisite = np.where((selectivities[pattern][1] > lcb_cutoff) | (selec_multisite_logit > lcb_cutoff))[0]
 
         RMSE = np.sqrt(np.mean((probs_pred[selective_inds] - selectivities[pattern][0][selective_inds])**2))
-        RMSE_random = np.sqrt(np.mean((probs_pred_random[selective_inds] - selectivities[pattern][0][selective_inds])**2))
-        RMSE_multisite = np.sqrt(np.mean((selec_multisite[selective_inds] - selectivities[pattern][0][selective_inds])**2))
+        RMSE_random = np.sqrt(np.mean((probs_pred_random[selective_inds_random] - selectivities[pattern][0][selective_inds_random])**2))
+        RMSE_multisite = np.sqrt(np.mean((selec_multisite[selective_inds_multisite] - selectivities[pattern][0][selective_inds_multisite])**2))
         MAE = np.mean(np.abs(probs_pred[selective_inds] - selectivities[pattern][0][selective_inds]))
-        MAE_random = np.mean(np.abs(probs_pred_random[selective_inds] - selectivities[pattern][0][selective_inds]))
-        MAE_multisite = np.mean(np.abs(selec_multisite[selective_inds] - selectivities[pattern][0][selective_inds]))
+        MAE_random = np.mean(np.abs(probs_pred_random[selective_inds_random] - selectivities[pattern][0][selective_inds_random]))
+        MAE_multisite = np.mean(np.abs(selec_multisite[selective_inds_multisite] - selectivities[pattern][0][selective_inds_multisite]))
 
         RMSEs.append(RMSE)
         RMSEs_random.append(RMSE_random)
@@ -379,29 +457,34 @@ for run in range(NUM_RUNS):
         success_fractions_random.append(success_fraction_random)
 
         lcb_cutoff_inds = np.where(lcb > lcb_cutoff)[0]
-        restricted_inds = np.union1d(subsample_inds, lcb_cutoff_inds)
+        max_sampled_inds = np.where(T_prev >= max_trials)[0]
+        restricted_inds = np.union1d(max_sampled_inds, lcb_cutoff_inds)
         allowed_inds = np.setdiff1d(np.arange(len(amps_gsort)), restricted_inds)
 
-        num_samples.append(len(subsample_inds))
-        num_samples_random.append(len(subsample_inds_random))
+        num_samples.append(np.sum(T_prev))
+        num_samples_random.append(np.sum(T_prev_random))
 
         if len(np.where(ucb[allowed_inds] > lcb_cutoff)[0]) == 0:
             print('No points above cutoff')
             break
         
-        # new_inds = allowed_inds[np.flip(np.argsort(ucb[allowed_inds]))[:batch_size]]
         new_inds = np.random.choice(allowed_inds[np.where(ucb[allowed_inds] > lcb_cutoff)[0]], 
-                                    size=batch_size if len(np.where(ucb[allowed_inds] > lcb_cutoff)[0]) >= batch_size else len(np.where(ucb[allowed_inds] > lcb_cutoff)[0]), 
-                                    replace=False)
-        subsample_inds = np.hstack((subsample_inds, new_inds))
-        new_probs = global_selectivity(selectivities[pattern][2][:, new_inds])
-        selec_probs = np.hstack((selec_probs, new_probs))
+                                    batch_size, replace=True)
+        T_new = np.bincount(new_inds, minlength=len(amps_gsort))
+        T_prev = T_prev + T_new
+        subsample_inds = np.where(T_prev > 0)[0]
+        probs = sample_spikes_array(selectivities[pattern][3], T_prev)
+        selec_probs = global_selectivity(probs[:, subsample_inds])
 
-        allowed_inds_random = np.setdiff1d(np.arange(len(amps_gsort)), subsample_inds_random)
-        new_inds_random = np.random.choice(allowed_inds_random, size=len(new_inds), replace=False)
-        subsample_inds_random = np.hstack((subsample_inds_random, new_inds_random))
-        new_probs_random = global_selectivity(selectivities[pattern][2][:, new_inds_random])
-        selec_probs_random = np.hstack((selec_probs_random, new_probs_random))
+        restricted_inds_random = np.where(T_prev_random >= max_trials)[0]
+        allowed_inds_random = np.setdiff1d(np.arange(len(amps_gsort)), restricted_inds_random)
+
+        new_inds_random = np.random.choice(allowed_inds_random, batch_size, replace=True)
+        T_new_random = np.bincount(new_inds_random, minlength=len(amps_gsort))
+        T_prev_random = T_prev_random + T_new_random
+        subsample_inds_random = np.where(T_prev_random > 0)[0]
+        probs_random = sample_spikes_array(selectivities[pattern][3], T_prev_random)
+        selec_probs_random = global_selectivity(probs_random[:, subsample_inds_random])
 
     success_fractions_all.append(success_fractions)
     success_fractions_random_all.append(success_fractions_random)
@@ -425,7 +508,7 @@ MAEs_all = np.array(MAEs_all, dtype=object)
 MAEs_random_all = np.array(MAEs_random_all, dtype=object)
 MAEs_multisite_all = np.array(MAEs_multisite_all, dtype=object)
 
-np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data.npz',
+np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials.npz',
         success_fractions_all=success_fractions_all,
         success_fractions_random_all=success_fractions_random_all,
         num_samples_all=num_samples_all,
