@@ -166,7 +166,7 @@ for p in patterns:
 
     for i in range(len(spikes_all)):
         for j in range(len(spikes_all[i])):
-            assert np.around(np.mean(spikes_all[i][j]), 3) == np.around(probs_all[i][j], 3), f"Mismatch between spikes and true probabilities at ({i}, {j}, {k})"
+            assert np.around(np.mean(spikes_all[i][j]), 3) == np.around(probs_all[i][j], 3), f"Mismatch between spikes and true probabilities at ({i}, {j})"
 
 beta = 1
 lcb_cutoff = 2.2    # ln(0.8/0.2) = 1.5, ln(0.9/0.1) = 2.2
@@ -182,11 +182,17 @@ success_fractions_random_all = []
 num_samples_all = []
 num_samples_random_all = []
 RMSEs_all = []
+RMSEs_all_logit = []
 RMSEs_random_all = []
+RMSEs_random_all_logit = []
 RMSEs_multisite_all = []
+RMSEs_multisite_all_logit = []
 MAEs_all = []
+MAEs_all_logit = []
 MAEs_random_all = []
+MAEs_random_all_logit = []
 MAEs_multisite_all = []
+MAEs_multisite_all_logit = []
 
 for run in range(NUM_RUNS):
     # Step 0: Initialize the data
@@ -211,13 +217,19 @@ for run in range(NUM_RUNS):
     success_fractions_random = []
 
     RMSEs = []
+    RMSEs_logit = []
     MAEs = []
+    MAEs_logit = []
 
     RMSEs_random = []
+    RMSEs_random_logit = []
     MAEs_random = []
+    MAEs_random_logit = []
 
     RMSEs_multisite = []
+    RMSEs_multisite_logit = []
     MAEs_multisite = []
+    MAEs_multisite_logit = []
     for step in range(num_steps):
         # Step 1: fitting the GP model
 
@@ -425,20 +437,35 @@ for run in range(NUM_RUNS):
         selective_inds_multisite = np.where((selectivities[pattern][1] > lcb_cutoff) | (selec_multisite_logit > lcb_cutoff))[0]
 
         RMSE = np.sqrt(np.mean((probs_pred[selective_inds] - selectivities[pattern][0][selective_inds])**2))
+        RMSE_logit = np.sqrt(np.mean((mean.cpu().numpy().flatten()[selective_inds] - selectivities[pattern][1][selective_inds])**2))
         RMSE_random = np.sqrt(np.mean((probs_pred_random[selective_inds_random] - selectivities[pattern][0][selective_inds_random])**2))
+        RMSE_random_logit = np.sqrt(np.mean((mean_random.cpu().numpy().flatten()[selective_inds_random] - selectivities[pattern][1][selective_inds_random])**2))
         RMSE_multisite = np.sqrt(np.mean((selec_multisite[selective_inds_multisite] - selectivities[pattern][0][selective_inds_multisite])**2))
+        RMSE_multisite_logit = np.sqrt(np.mean((selec_multisite_logit[selective_inds_multisite] - selectivities[pattern][1][selective_inds_multisite])**2))
         MAE = np.mean(np.abs(probs_pred[selective_inds] - selectivities[pattern][0][selective_inds]))
+        MAE_logit = np.mean(np.abs(mean.cpu().numpy().flatten()[selective_inds] - selectivities[pattern][1][selective_inds]))
         MAE_random = np.mean(np.abs(probs_pred_random[selective_inds_random] - selectivities[pattern][0][selective_inds_random]))
+        MAE_random_logit = np.mean(np.abs(mean_random.cpu().numpy().flatten()[selective_inds_random] - selectivities[pattern][1][selective_inds_random]))
         MAE_multisite = np.mean(np.abs(selec_multisite[selective_inds_multisite] - selectivities[pattern][0][selective_inds_multisite]))
+        MAE_multisite_logit = np.mean(np.abs(selec_multisite_logit[selective_inds_multisite] - selectivities[pattern][1][selective_inds_multisite]))
 
         RMSEs.append(RMSE)
+        RMSEs_logit.append(RMSE_logit)
         RMSEs_random.append(RMSE_random)
+        RMSEs_random_logit.append(RMSE_random_logit)
         RMSEs_multisite.append(RMSE_multisite)
+        RMSEs_multisite_logit.append(RMSE_multisite_logit)
         MAEs.append(MAE)
+        MAEs_logit.append(MAE_logit)
         MAEs_random.append(MAE_random)
+        MAEs_random_logit.append(MAE_random_logit)
         MAEs_multisite.append(MAE_multisite)
+        MAEs_multisite_logit.append(MAE_multisite_logit)
         print(f'RMSE: {RMSE}, RMSE (Random): {RMSE_random}, RMSE (Multisite): {RMSE_multisite}')
         print(f'MAE: {MAE}, MAE (Random): {MAE_random}, MAE (Multisite): {MAE_multisite}')
+
+        print(f'RMSE (logit): {RMSE_logit}, RMSE (Random, logit): {RMSE_random_logit}, RMSE (Multisite, logit): {RMSE_multisite_logit}')
+        print(f'MAE (logit): {MAE_logit}, MAE (Random, logit): {MAE_random_logit}, MAE (Multisite, logit): {MAE_multisite_logit}')
 
         ucb = mean.cpu().numpy().flatten() + beta*np.sqrt(var.cpu().numpy().flatten())
         lcb = mean.cpu().numpy().flatten() - beta*np.sqrt(var.cpu().numpy().flatten())
@@ -491,32 +518,52 @@ for run in range(NUM_RUNS):
     num_samples_all.append(num_samples)
     num_samples_random_all.append(num_samples_random)
     RMSEs_all.append(RMSEs)
+    RMSEs_all_logit.append(RMSEs_logit)
     RMSEs_random_all.append(RMSEs_random)
+    RMSEs_random_all_logit.append(RMSEs_random_logit)
     RMSEs_multisite_all.append(RMSEs_multisite)
+    RMSEs_multisite_all_logit.append(RMSEs_multisite_logit)
     MAEs_all.append(MAEs)
+    MAEs_all_logit.append(MAEs_logit)
     MAEs_random_all.append(MAEs_random)
+    MAEs_random_all_logit.append(MAEs_random_logit)
     MAEs_multisite_all.append(MAEs_multisite)
+    MAEs_multisite_all_logit.append(MAEs_multisite_logit)
 
 success_fractions_all = np.array(success_fractions_all, dtype=object)
 success_fractions_random_all = np.array(success_fractions_random_all, dtype=object)
 num_samples_all = np.array(num_samples_all, dtype=object)
 num_samples_random_all = np.array(num_samples_random_all, dtype=object)
 RMSEs_all = np.array(RMSEs_all, dtype=object)
+RMSEs_all_logit = np.array(RMSEs_all_logit, dtype=object)
 RMSEs_random_all = np.array(RMSEs_random_all, dtype=object)
+RMSEs_random_all_logit = np.array(RMSEs_random_all_logit, dtype=object)
 RMSEs_multisite_all = np.array(RMSEs_multisite_all, dtype=object)
+RMSEs_multisite_all_logit = np.array(RMSEs_multisite_all_logit, dtype=object)
 MAEs_all = np.array(MAEs_all, dtype=object)
+MAEs_all_logit = np.array(MAEs_all_logit, dtype=object)
 MAEs_random_all = np.array(MAEs_random_all, dtype=object)
+MAEs_random_all_logit = np.array(MAEs_random_all_logit, dtype=object)
 MAEs_multisite_all = np.array(MAEs_multisite_all, dtype=object)
+MAEs_multisite_all_logit = np.array(MAEs_multisite_all_logit, dtype=object)
 
-np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials.npz',
+np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials-logit-beta{beta}-L{int(lcb_cutoff)}.npz',
         success_fractions_all=success_fractions_all,
         success_fractions_random_all=success_fractions_random_all,
         num_samples_all=num_samples_all,
         num_samples_random_all=num_samples_random_all,
         RMSEs_all=RMSEs_all,
+        RMSEs_all_logit=RMSEs_all_logit,
         RMSEs_random_all=RMSEs_random_all,
+        RMSEs_random_all_logit=RMSEs_random_all_logit,
         RMSEs_multisite_all=RMSEs_multisite_all,
+        RMSEs_multisite_all_logit=RMSEs_multisite_all_logit,
         MAEs_all=MAEs_all,
+        MAEs_all_logit=MAEs_all_logit,
         MAEs_random_all=MAEs_random_all,
-        MAEs_multisite_all=MAEs_multisite_all
+        MAEs_random_all_logit=MAEs_random_all_logit,
+        MAEs_multisite_all=MAEs_multisite_all,
+        MAEs_multisite_all_logit=MAEs_multisite_all_logit,
+        beta=beta,
+        lcb_cutoff=lcb_cutoff,
         )
