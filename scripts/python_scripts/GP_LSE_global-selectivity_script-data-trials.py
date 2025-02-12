@@ -1,5 +1,5 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]= '3'
+os.environ["CUDA_VISIBLE_DEVICES"]= '2'
 import numpy as np
 from scipy.io import loadmat
 from copy import deepcopy
@@ -72,6 +72,36 @@ def global_selectivity(probs_2d):
     
     return selectivity
 
+def logit_r_squared(y_true, y_pred):
+    y_true = np.clip(y_true, 1e-2, 1-1e-2)
+    y_pred = np.clip(y_pred, 1e-2, 1-1e-2)
+    y_true_logit = np.log(y_true/(1-y_true))
+    y_pred_logit = np.log(y_pred/(1-y_pred))
+    ss_res = np.sum((y_true_logit - y_pred_logit) ** 2)
+    ss_tot = np.sum((y_true_logit - np.mean(y_true_logit)) ** 2)
+    return 1 - (ss_res / ss_tot)
+
+def logit_ccc(y_true, y_pred):
+    y_true = np.clip(y_true, 1e-2, 1-1e-2)
+    y_pred = np.clip(y_pred, 1e-2, 1-1e-2)
+    y_true_logit = np.log(y_true/(1-y_true))
+    y_pred_logit = np.log(y_pred/(1-y_pred))
+    # Concordance correlation coefficient
+
+    # Means
+    y_true_mean = np.mean(y_true_logit)
+    y_pred_mean = np.mean(y_pred_logit)
+
+    # Variances
+    y_true_var = np.var(y_true_logit)
+    y_pred_var = np.var(y_pred_logit)
+
+    # correlation coefficient
+    corr_coef = np.corrcoef(y_true_logit, y_pred_logit)[0, 1]
+
+    ccc = 2 * corr_coef * np.sqrt(y_true_var) * np.sqrt(y_pred_var) / (y_true_var + y_pred_var + (y_true_mean - y_pred_mean) ** 2)
+    return ccc
+
 dataset = '2020-09-29-2'
 basename = f'/Volumes/Analysis/{dataset}/gsort'
 ESTIM_ANALYSIS_BASE = '/Volumes/Lab/Users/praful/outputs/pp_out'
@@ -95,7 +125,7 @@ amps_gsort = mutils.get_stim_amps_newlv(os.path.join(ESTIM_ANALYSIS_BASE, datase
 path = os.path.join(basename, datarun, wnoise)
 file_list = os.listdir(path)
 
-ms = [1, 2, 3, 4, 5]
+ms = [8]
 zero_prob = 0.01
 slope_bound = 100
 R2_thresh = 0.025
@@ -168,8 +198,8 @@ for p in patterns:
         for j in range(len(spikes_all[i])):
             assert np.around(np.mean(spikes_all[i][j]), 3) == np.around(probs_all[i][j], 3), f"Mismatch between spikes and true probabilities at ({i}, {j})"
 
-beta = 1
-lcb_cutoff = 2.2    # ln(0.8/0.2) = 1.5, ln(0.9/0.1) = 2.2
+beta = 2
+lcb_cutoff = 3    # ln(0.8/0.2) = 1.5, ln(0.9/0.1) = 2.2
 batch_size = 1000
 num_steps = 10
 init_trials = 1000
@@ -193,6 +223,12 @@ MAEs_random_all = []
 MAEs_random_all_logit = []
 MAEs_multisite_all = []
 MAEs_multisite_all_logit = []
+R2s_all = []
+R2s_random_all = []
+R2s_multisite_all = []
+CCCs_all = []
+CCCs_random_all = []
+CCCs_multisite_all = []
 
 for run in range(NUM_RUNS):
     # Step 0: Initialize the data
@@ -230,6 +266,13 @@ for run in range(NUM_RUNS):
     RMSEs_multisite_logit = []
     MAEs_multisite = []
     MAEs_multisite_logit = []
+
+    R2s = []
+    R2s_random = []
+    R2s_multisite = []
+    CCCs = []
+    CCCs_random = []
+    CCCs_multisite = []
     for step in range(num_steps):
         # Step 1: fitting the GP model
 
@@ -333,10 +376,10 @@ for run in range(NUM_RUNS):
                 print(f"Early stopping triggered at iteration {i + 1}")
                 break
 
-            if i % 10 == 0:
-                print(f"Iteration {i + 1}/{training_iter} - Training Loss: {loss_train.item()}")
-                print(f"  Lengthscale: {model.covar_module.lengthscale}")
-                print(f"  Noise: {model.likelihood.noise_covar.noise}")
+            # if i % 10 == 0:
+            #     print(f"Iteration {i + 1}/{training_iter} - Training Loss: {loss_train.item()}")
+            #     print(f"  Lengthscale: {model.covar_module.lengthscale}")
+            #     print(f"  Noise: {model.likelihood.noise_covar.noise}")
 
         # Initialize the likelihood and model
         likelihood_random = GaussianLikelihood()
@@ -378,10 +421,10 @@ for run in range(NUM_RUNS):
                 print(f"Early stopping triggered at iteration {i + 1}")
                 break
 
-            if i % 10 == 0:
-                print(f"Iteration {i + 1}/{training_iter} - Training Loss: {loss_train_random.item()}")
-                print(f"  Lengthscale: {model_random.covar_module.lengthscale}")
-                print(f"  Noise: {model_random.likelihood.noise_covar.noise}")
+            # if i % 10 == 0:
+            #     print(f"Iteration {i + 1}/{training_iter} - Training Loss: {loss_train_random.item()}")
+            #     print(f"  Lengthscale: {model_random.covar_module.lengthscale}")
+            #     print(f"  Noise: {model_random.likelihood.noise_covar.noise}")
 
         # Step 2: Model evaluation and plotting
 
@@ -449,6 +492,14 @@ for run in range(NUM_RUNS):
         MAE_multisite = np.mean(np.abs(selec_multisite[selective_inds_multisite] - selectivities[pattern][0][selective_inds_multisite]))
         MAE_multisite_logit = np.mean(np.abs(selec_multisite_logit[selective_inds_multisite] - selectivities[pattern][1][selective_inds_multisite]))
 
+        R2 = logit_r_squared(selectivities[pattern][0], probs_pred)
+        R2_random = logit_r_squared(selectivities[pattern][0], probs_pred_random)
+        R2_multisite = logit_r_squared(selectivities[pattern][0], selec_multisite)
+
+        CCC = logit_ccc(selectivities[pattern][0], probs_pred)
+        CCC_random = logit_ccc(selectivities[pattern][0], probs_pred_random)
+        CCC_multisite = logit_ccc(selectivities[pattern][0], selec_multisite)
+
         RMSEs.append(RMSE)
         RMSEs_logit.append(RMSE_logit)
         RMSEs_random.append(RMSE_random)
@@ -461,11 +512,20 @@ for run in range(NUM_RUNS):
         MAEs_random_logit.append(MAE_random_logit)
         MAEs_multisite.append(MAE_multisite)
         MAEs_multisite_logit.append(MAE_multisite_logit)
+        R2s.append(R2)
+        R2s_random.append(R2_random)
+        R2s_multisite.append(R2_multisite)
+        CCCs.append(CCC)
+        CCCs_random.append(CCC_random)
+        CCCs_multisite.append(CCC_multisite)
         print(f'RMSE: {RMSE}, RMSE (Random): {RMSE_random}, RMSE (Multisite): {RMSE_multisite}')
         print(f'MAE: {MAE}, MAE (Random): {MAE_random}, MAE (Multisite): {MAE_multisite}')
 
         print(f'RMSE (logit): {RMSE_logit}, RMSE (Random, logit): {RMSE_random_logit}, RMSE (Multisite, logit): {RMSE_multisite_logit}')
         print(f'MAE (logit): {MAE_logit}, MAE (Random, logit): {MAE_random_logit}, MAE (Multisite, logit): {MAE_multisite_logit}')
+
+        print(f'R2: {R2}, R2 (Random): {R2_random}, R2 (Multisite): {R2_multisite}')
+        print(f'CCC: {CCC}, CCC (Random): {CCC_random}, CCC (Multisite): {CCC_multisite}')
 
         ucb = mean.cpu().numpy().flatten() + beta*np.sqrt(var.cpu().numpy().flatten())
         lcb = mean.cpu().numpy().flatten() - beta*np.sqrt(var.cpu().numpy().flatten())
@@ -529,6 +589,12 @@ for run in range(NUM_RUNS):
     MAEs_random_all_logit.append(MAEs_random_logit)
     MAEs_multisite_all.append(MAEs_multisite)
     MAEs_multisite_all_logit.append(MAEs_multisite_logit)
+    R2s_all.append(R2s)
+    R2s_random_all.append(R2s_random)
+    R2s_multisite_all.append(R2s_multisite)
+    CCCs_all.append(CCCs)
+    CCCs_random_all.append(CCCs_random)
+    CCCs_multisite_all.append(CCCs_multisite)
 
 success_fractions_all = np.array(success_fractions_all, dtype=object)
 success_fractions_random_all = np.array(success_fractions_random_all, dtype=object)
@@ -546,8 +612,14 @@ MAEs_random_all = np.array(MAEs_random_all, dtype=object)
 MAEs_random_all_logit = np.array(MAEs_random_all_logit, dtype=object)
 MAEs_multisite_all = np.array(MAEs_multisite_all, dtype=object)
 MAEs_multisite_all_logit = np.array(MAEs_multisite_all_logit, dtype=object)
+R2s_all = np.array(R2s_all, dtype=object)
+R2s_random_all = np.array(R2s_random_all, dtype=object)
+R2s_multisite_all = np.array(R2s_multisite_all, dtype=object)
+CCCs_all = np.array(CCCs_all, dtype=object)
+CCCs_random_all = np.array(CCCs_random_all, dtype=object)
+CCCs_multisite_all = np.array(CCCs_multisite_all, dtype=object)
 
-np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials-logit-beta{beta}-L{int(lcb_cutoff)}.npz',
+np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials-fixedm-R2-logit-beta{beta}-L{int(lcb_cutoff)}.npz',
         success_fractions_all=success_fractions_all,
         success_fractions_random_all=success_fractions_random_all,
         num_samples_all=num_samples_all,
@@ -564,6 +636,12 @@ np.savez(f'gp_lse_global_selectivity_{dataset}_p{pattern}-multisite-data-trials-
         MAEs_random_all_logit=MAEs_random_all_logit,
         MAEs_multisite_all=MAEs_multisite_all,
         MAEs_multisite_all_logit=MAEs_multisite_all_logit,
+        R2s_all=R2s_all,
+        R2s_random_all=R2s_random_all,
+        R2s_multisite_all=R2s_multisite_all,
+        CCCs_all=CCCs_all,
+        CCCs_random_all=CCCs_random_all,
+        CCCs_multisite_all=CCCs_multisite_all,
         beta=beta,
         lcb_cutoff=lcb_cutoff,
         )
