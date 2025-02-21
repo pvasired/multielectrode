@@ -322,6 +322,29 @@ def fit_surface_earlystop(X_expt, probs, T, w_inits_,
         return (deg_opt, 0, -1), w_inits
 
     X_const = sm.add_constant(X_expt, has_constant='add')
+
+    if len(w_inits) == 1:
+        if reg_method == 'MAP':
+            opt = get_w(w_inits[0], X_const, probs, T, zero_prob=zero_prob,
+                                        method=method, 
+                                        jac=jac, 
+                                        reg_method=reg_method,
+                                        reg=(reg[0], reg[1][0][0], reg[1][0][1]),
+                                        verbose=opt_verbose, 
+                                        slope_bound=slope_bound)
+        else:
+            opt = get_w(w_inits[0], X_const, probs, T,
+                                                        zero_prob=zero_prob, 
+                                                        method=method, 
+                                                        jac=jac, 
+                                                        reg_method=reg_method, 
+                                                        reg=reg, 
+                                                        verbose=opt_verbose,
+                                                        slope_bound=slope_bound)
+            
+        return opt, w_inits
+
+
     X_train, X_test, y_train, y_test, T_train, T_test = model_selection.train_test_split(X_const, probs, T,
                                                                                          test_size=test_size, random_state=random_state)
 
